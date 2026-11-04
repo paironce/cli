@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      PAIRONCE_HOME: ${{ runner.temp }}/paironce
+      PAIRONCE_HOME: /tmp/paironce-check
     steps:
       - uses: actions/setup-node@v5
         with:
