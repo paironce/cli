@@ -4180,7 +4180,7 @@ async function sendPath(link, file, report = say) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.2.0-rc.3";
+var CLI_VERSION = "0.2.0";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}
