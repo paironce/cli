@@ -1,0 +1,42 @@
+# A manual check that the published CLI connects from a cloud machine to a browser on paironce.com: it pairs with the
+# code the browser shows, then sends a file and a message to it. "no-udp" drops all outbound UDP except DNS, the way
+# many sandboxes and containers do, so only TCP/TLS paths (the relay on 443) are left.
+name: Live check from a cloud machine
+on:
+  workflow_dispatch:
+    inputs:
+      code:
+        description: Six-digit code shown by the browser
+        required: true
+      network:
+        description: normal or no-udp
+        default: normal
+      version:
+        description: paironce version from npm
+        default: latest
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PAIRONCE_HOME: ${{ runner.temp }}/paironce
+    steps:
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - run: npm install -g paironce@${{ inputs.version }} && paironce --version
+      - name: Block outbound UDP except DNS
+        if: inputs.network == 'no-udp'
+        run: |
+          sudo iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+          sudo iptables -A OUTPUT -o lo -j ACCEPT
+          sudo iptables -A OUTPUT -p udp -j DROP
+          sudo ip6tables -A OUTPUT -p udp --dport 53 -j ACCEPT
+          sudo ip6tables -A OUTPUT -o lo -j ACCEPT
+          sudo ip6tables -A OUTPUT -p udp -j DROP
+      - run: paironce pair "${{ inputs.code }}"
+      - run: printf 'Sent from a GitHub Actions runner (%s network) at %s\n' "${{ inputs.network }}" "$(date -u)" > runner-check.txt
+      - run: paironce send runner-check.txt
+      - run: paironce text "runner says hello (${{ inputs.network }})"
