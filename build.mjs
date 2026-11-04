@@ -8,6 +8,8 @@ const here = fileURLToPath(new URL('.', import.meta.url));
 const pkg = JSON.parse(readFileSync(new URL('package.json', import.meta.url), 'utf8'));
 const version = /CLI_VERSION = "([^"]+)"/.exec(readFileSync(new URL('src/version.ts', import.meta.url), 'utf8'))?.[1];
 if (version !== pkg.version) throw new Error(`src/version.ts says ${version}, package.json ${pkg.version}`);
+const server = JSON.parse(readFileSync(new URL('server.json', import.meta.url), 'utf8'));
+if (server.name !== pkg.mcpName || server.version !== pkg.version || server.packages[0].version !== pkg.version) throw new Error('server.json does not match package.json');
 const origin = process.env.PAIRONCE_ORIGIN ?? 'https://paironce.com';
 
 await build({

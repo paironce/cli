@@ -1,5 +1,5 @@
 // What an agent takes from a paired device, and how it pairs: only what it asked for, and never by a code from elsewhere.
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -160,6 +160,40 @@ describe("pair_device shows a code; it never takes one", () => {
     expect(await callTool("pair_device", { confirm: false })).toContain("refused");
     expect(approved).toBe(false);
   }, 20000);
+});
+
+describe("where an MCP tool saves", () => {
+  it("is a folder inside the server's folder", async () => {
+    const { insideFolder } = await import("./receive");
+    const root = realpathSync(cwd);
+    expect(await insideFolder(undefined, "inbox")).toBe(path.join(root, "inbox"));
+    expect(await insideFolder("scans/2026", "inbox")).toBe(path.join(root, "scans", "2026"));
+    expect(await insideFolder("./scans\\june", "inbox")).toBe(path.join(root, "scans", "june"));
+  });
+
+  it("refuses a way out, a dot folder, an absolute path and the folder itself", async () => {
+    const { insideFolder } = await import("./receive");
+    for (const folder of ["/etc", "C:\\Users\\me", "C:evil", "\\\\server\\share", "../up", "a/../../up", "~/.ssh", ".ssh", ".claude/commands", "a/.git/hooks", ".", "./", "a:b"]) {
+      await expect(insideFolder(folder, "inbox"), folder).rejects.toThrow("must be a relative path");
+    }
+  });
+
+  it("refuses a link that leads out", async () => {
+    const { insideFolder } = await import("./receive");
+    const outside = mkdtempSync(path.join(tmpdir(), "paironce-outside-"));
+    try { symlinkSync(outside, path.join(cwd, "out"), "junction"); } catch { return; }
+    await expect(insideFolder("out", "inbox")).rejects.toThrow("must be a relative path");
+    await expect(insideFolder("out/deeper/still", "inbox")).rejects.toThrow("must be a relative path");
+  });
+
+  it("is checked before any tool connects", async () => {
+    const { callTool } = await import("./mcp");
+    links.connects.length = 0;
+    await expect(callTool("receive_files", { folder: path.join(tmpdir(), ".ssh") })).rejects.toThrow("must be a relative path");
+    await expect(callTool("request_file", { purpose: "a key", folder: "../up" })).rejects.toThrow("must be a relative path");
+    await expect(callTool("watch_frames", { purpose: "see it", folder: "/etc" })).rejects.toThrow("must be a relative path");
+    expect(links.connects).toHaveLength(0);
+  });
 });
 
 describe("the MCP server's input", () => {

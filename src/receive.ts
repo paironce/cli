@@ -1,5 +1,5 @@
 /** Saving what arrives on an open link into a folder, shared by `paironce receive` and the MCP `receive_files` tool. */
-import { mkdir, open, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { FileOffer, ReceivedFile } from "../../../apps/app/src/session";
 import type { Link } from "./connection";
@@ -17,6 +17,30 @@ export async function uniquePath(folder: string, name: string): Promise<string> 
     try { await (await open(candidate, "wx")).close(); return candidate; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
   }
+}
+
+/**
+ * Where an MCP tool saves: a folder inside the server's folder, never that folder itself. The name comes from the model,
+ * and a message from the other device or a file it read can talk a model into anything, so an absolute path, a way out,
+ * a dot folder such as .ssh or .claude, or a link that leads out is refused (CLI 0.8.1). A person's --to is not limited.
+ */
+export async function insideFolder(value: unknown, fallback: string): Promise<string> {
+  const wanted = typeof value === "string" && value ? value : fallback;
+  const parts = wanted.replace(/\\/g, "/").split("/").filter(part => part && part !== ".");
+  const refused = `Cannot save to "${wanted.slice(0, 200)}": folder must be a relative path inside the server's folder, with no ".." and no folder starting with a dot.`;
+  if (path.posix.isAbsolute(wanted) || path.win32.isAbsolute(wanted) || !parts.length || parts.some(part => part.startsWith(".") || part.includes(":"))) throw new Error(refused);
+  const root = await realpath(process.cwd());
+  let existing = path.join(root, ...parts);
+  for (;;) {
+    try { existing = await realpath(existing); break; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || existing === root) throw error;
+      existing = path.dirname(existing);
+    }
+  }
+  const relative = path.relative(root, existing);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error(refused);
+  return path.join(root, ...parts);
 }
 
 export interface ReceiveHandlers {

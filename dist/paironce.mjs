@@ -4527,7 +4527,7 @@ function createDiskReceiver(folder) {
 }
 
 // src/receive.ts
-import { mkdir as mkdir3, open, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
+import { mkdir as mkdir3, open, realpath, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
 import path3 from "node:path";
 async function uniquePath(folder, name) {
   const safe = path3.basename(name.replace(/\\/g, "/")).replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069<>:"/\\|?*]/g, "_").replace(/^\.+/, "_") || "file";
@@ -4541,6 +4541,26 @@ async function uniquePath(folder, name) {
       if (error.code !== "EEXIST") throw error;
     }
   }
+}
+async function insideFolder(value, fallback) {
+  const wanted = typeof value === "string" && value ? value : fallback;
+  const parts = wanted.replace(/\\/g, "/").split("/").filter((part) => part && part !== ".");
+  const refused = `Cannot save to "${wanted.slice(0, 200)}": folder must be a relative path inside the server's folder, with no ".." and no folder starting with a dot.`;
+  if (path3.posix.isAbsolute(wanted) || path3.win32.isAbsolute(wanted) || !parts.length || parts.some((part) => part.startsWith(".") || part.includes(":"))) throw new Error(refused);
+  const root = await realpath(process.cwd());
+  let existing = path3.join(root, ...parts);
+  for (; ; ) {
+    try {
+      existing = await realpath(existing);
+      break;
+    } catch (error) {
+      if (error.code !== "ENOENT" || existing === root) throw error;
+      existing = path3.dirname(existing);
+    }
+  }
+  const relative = path3.relative(root, existing);
+  if (relative.startsWith("..") || path3.isAbsolute(relative)) throw new Error(refused);
+  return path3.join(root, ...parts);
 }
 async function receiveInto(link, folder, handlers) {
   await mkdir3(folder, { recursive: true });
@@ -4612,7 +4632,7 @@ async function sendPath(link, file, report = say) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.8.0";
+var CLI_VERSION = "0.8.1";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}
@@ -4723,7 +4743,7 @@ var TOOLS = [
     description: "Wait for the user to send files (photos, scans, documents) from one of their paired devices, and save them into a folder here. Tell the user to open https://paironce.com on that device, tap Connect, then choose the files. Returns the saved paths and any messages the user sent.",
     inputSchema: { type: "object", properties: {
       device: target,
-      folder: { type: "string", description: "Where to save, relative to the server's folder. Default: inbox." },
+      folder: { type: "string", description: "Where to save: a relative path inside the server's folder, with no folder starting with a dot. Default: inbox." },
       wait_seconds: { type: "number", description: `How long to wait for the user, ${RECEIVE_WAIT.default} by default, at most ${RECEIVE_WAIT.max}.` }
     } }
   },
@@ -4739,7 +4759,7 @@ var TOOLS = [
       properties: {
         purpose: { type: "string", description: "What you need and why, in one or two sentences the user reads on their device (at most 300 characters)." },
         device: target,
-        folder: { type: "string", description: "Where to save, relative to the server's folder. Default: inbox." },
+        folder: { type: "string", description: "Where to save: a relative path inside the server's folder, with no folder starting with a dot. Default: inbox." },
         wait_seconds: { type: "number", description: `How long to wait for the user, ${RECEIVE_WAIT.default} by default, at most ${RECEIVE_WAIT.max}.` }
       },
       required: ["purpose"]
@@ -4753,7 +4773,7 @@ var TOOLS = [
       count: { type: "number", description: `Stills to take now, 1 to ${WATCH.count}. Default 1.` },
       interval_seconds: { type: "number", description: `Seconds between those stills, ${WATCH.interval.min} to ${WATCH.interval.max}. Default ${WATCH.interval.default}.` },
       device: target,
-      folder: { type: "string", description: "Where to save the stills, relative to the server's folder. Default: inbox/watch." },
+      folder: { type: "string", description: "Where to save the stills: a relative path inside the server's folder, with no folder starting with a dot. Default: inbox/watch." },
       wait_seconds: { type: "number", description: `When asking: how long to wait for the user to share, ${RECEIVE_WAIT.default} by default, at most ${RECEIVE_WAIT.max}.` }
     } }
   },
@@ -4775,7 +4795,7 @@ async function startWatch(args, device) {
   if (!purpose) throw new Error(`${lastWatchEnd ? `Not watching: ${lastWatchEnd} ` : ""}purpose is required to start watching: say what you want to see and why, in a sentence the user reads on their device.`);
   lastWatchEnd = void 0;
   const seconds = Math.min(RECEIVE_WAIT.max, Math.max(10, typeof args.wait_seconds === "number" ? args.wait_seconds : RECEIVE_WAIT.default));
-  const folder = path5.resolve(typeof args.folder === "string" && args.folder ? args.folder : path5.join("inbox", "watch"));
+  const folder = await insideFolder(args.folder, "inbox/watch");
   const link = await openSaved(device, seconds, folder);
   let answer2;
   let closed = false;
@@ -4893,7 +4913,7 @@ async function requestFrom(kind, args, device) {
   const purpose = typeof args.purpose === "string" ? args.purpose.trim() : "";
   if (!purpose) throw new Error("purpose is required: say what you need and why, in a sentence the user reads on their device.");
   const seconds = Math.min(RECEIVE_WAIT.max, Math.max(10, typeof args.wait_seconds === "number" ? args.wait_seconds : RECEIVE_WAIT.default));
-  const folder = path5.resolve(typeof args.folder === "string" && args.folder ? args.folder : "inbox");
+  const folder = await insideFolder(args.folder, "inbox");
   const deadline = Date.now() + seconds * 1e3;
   const link = await openSaved(device, seconds, folder);
   const saved = [];
@@ -4980,7 +5000,7 @@ async function openSaved(device, seconds, folder) {
 }
 async function receiveFiles(args, device) {
   const seconds = Math.min(RECEIVE_WAIT.max, Math.max(10, typeof args.wait_seconds === "number" ? args.wait_seconds : RECEIVE_WAIT.default));
-  const folder = path5.resolve(typeof args.folder === "string" && args.folder ? args.folder : "inbox");
+  const folder = await insideFolder(args.folder, "inbox");
   const deadline = Date.now() + seconds * 1e3;
   const link = await openSaved(device, seconds, folder);
   const saved = [];

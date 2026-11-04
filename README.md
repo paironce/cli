@@ -29,7 +29,7 @@ install there.
 
 `--name "<name>"` (or the `PAIRONCE_NAME` variable) sets what the other device shows for this one, for example
 `--name "Build server"`. The key stays the same, so paired devices still know it. `--agent` marks this device as an AI
-agent on the other device (the MCP server always does). `--ephemeral` uses a throwaway identity in a temporary folder,
+agent on the other device (the MCP server always does). The MCP tools save inside the folder the server runs in (`inbox` by default). `--ephemeral` uses a throwaway identity in a temporary folder,
 which the other device forgets after a day without a connection: right for a sandbox that is thrown away.
 
 When a paired device is not connected, the command asks it to connect: PairOnce on that device shows

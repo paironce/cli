@@ -23,7 +23,7 @@ import path from "node:path";
 import { PAIRING_CODE_TTL_MS, type DeviceDescriptor } from "../../../apps/app/src/identity";
 import { connect, type Link } from "./connection";
 import { createDiskReceiver } from "./disk";
-import { receiveInto } from "./receive";
+import { insideFolder, receiveInto } from "./receive";
 import { listDevices, loadOrCreateIdentity, pickDevice, safeName } from "./store";
 import { pathName, sendPath } from "./send";
 import { CLI_VERSION } from "./version";
@@ -102,7 +102,7 @@ export const TOOLS = [
     inputSchema: { type: "object", properties: { text: { type: "string" }, device: target }, required: ["text"] } },
   { name: "receive_files", description: "Wait for the user to send files (photos, scans, documents) from one of their paired devices, and save them into a folder here. Tell the user to open https://paironce.com on that device, tap Connect, then choose the files. Returns the saved paths and any messages the user sent.",
     inputSchema: { type: "object", properties: { device: target,
-      folder: { type: "string", description: "Where to save, relative to the server's folder. Default: inbox." },
+      folder: { type: "string", description: "Where to save: a relative path inside the server's folder, with no folder starting with a dot. Default: inbox." },
       wait_seconds: { type: "number", description: `How long to wait for the user, ${RECEIVE_WAIT.default} by default, at most ${RECEIVE_WAIT.max}.` } } } },
   ...(["photo", "scan", "file"] as const).map(kind => ({
     name: `request_${kind}`,
@@ -114,7 +114,7 @@ export const TOOLS = [
     inputSchema: { type: "object", properties: {
       purpose: { type: "string", description: "What you need and why, in one or two sentences the user reads on their device (at most 300 characters)." },
       device: target,
-      folder: { type: "string", description: "Where to save, relative to the server's folder. Default: inbox." },
+      folder: { type: "string", description: "Where to save: a relative path inside the server's folder, with no folder starting with a dot. Default: inbox." },
       wait_seconds: { type: "number", description: `How long to wait for the user, ${RECEIVE_WAIT.default} by default, at most ${RECEIVE_WAIT.max}.` } },
       required: ["purpose"] },
   })),
@@ -124,7 +124,7 @@ export const TOOLS = [
       count: { type: "number", description: `Stills to take now, 1 to ${WATCH.count}. Default 1.` },
       interval_seconds: { type: "number", description: `Seconds between those stills, ${WATCH.interval.min} to ${WATCH.interval.max}. Default ${WATCH.interval.default}.` },
       device: target,
-      folder: { type: "string", description: "Where to save the stills, relative to the server's folder. Default: inbox/watch." },
+      folder: { type: "string", description: "Where to save the stills: a relative path inside the server's folder, with no folder starting with a dot. Default: inbox/watch." },
       wait_seconds: { type: "number", description: `When asking: how long to wait for the user to share, ${RECEIVE_WAIT.default} by default, at most ${RECEIVE_WAIT.max}.` } } } },
   { name: "watch_stop", description: "Stop watching the user's camera or screen (see watch_frames). Their device stops sharing.", inputSchema: { type: "object", properties: {} } },
 ];
@@ -150,7 +150,7 @@ async function startWatch(args: Record<string, unknown>, device: string | undefi
   if (!purpose) throw new Error(`${lastWatchEnd ? `Not watching: ${lastWatchEnd} ` : ""}purpose is required to start watching: say what you want to see and why, in a sentence the user reads on their device.`);
   lastWatchEnd = undefined;
   const seconds = Math.min(RECEIVE_WAIT.max, Math.max(10, typeof args.wait_seconds === "number" ? args.wait_seconds : RECEIVE_WAIT.default));
-  const folder = path.resolve(typeof args.folder === "string" && args.folder ? args.folder : path.join("inbox", "watch"));
+  const folder = await insideFolder(args.folder, "inbox/watch");
   const link = await openSaved(device, seconds, folder);
   let answer: "decline" | "watch" | undefined;
   let closed = false;
@@ -233,7 +233,7 @@ async function requestFrom(kind: "photo" | "scan" | "file", args: Record<string,
   const purpose = typeof args.purpose === "string" ? args.purpose.trim() : "";
   if (!purpose) throw new Error("purpose is required: say what you need and why, in a sentence the user reads on their device.");
   const seconds = Math.min(RECEIVE_WAIT.max, Math.max(10, typeof args.wait_seconds === "number" ? args.wait_seconds : RECEIVE_WAIT.default));
-  const folder = path.resolve(typeof args.folder === "string" && args.folder ? args.folder : "inbox");
+  const folder = await insideFolder(args.folder, "inbox");
   const deadline = Date.now() + seconds * 1000;
   const link = await openSaved(device, seconds, folder);
   const saved: string[] = []; const failures: string[] = [];
@@ -290,7 +290,7 @@ async function openSaved(device: string | undefined, seconds: number, folder?: s
 
 async function receiveFiles(args: Record<string, unknown>, device: string | undefined): Promise<string> {
   const seconds = Math.min(RECEIVE_WAIT.max, Math.max(10, typeof args.wait_seconds === "number" ? args.wait_seconds : RECEIVE_WAIT.default));
-  const folder = path.resolve(typeof args.folder === "string" && args.folder ? args.folder : "inbox");
+  const folder = await insideFolder(args.folder, "inbox");
   const deadline = Date.now() + seconds * 1000;
   const link = await openSaved(device, seconds, folder);
   const saved: string[] = []; const texts: string[] = []; const failures: string[] = [];
