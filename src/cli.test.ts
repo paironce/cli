@@ -54,13 +54,13 @@ describe("the terminal's device", () => {
 });
 
 describe("the MCP server", () => {
-  it("introduces itself, lists its five tools and ignores notifications", async () => {
+  it("introduces itself, lists its eight tools and ignores notifications", async () => {
     const init = await answer({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } }) as { result: { serverInfo: { name: string }; capabilities: object } };
     expect(init.result.serverInfo.name).toBe("paironce");
     expect(init.result.capabilities).toEqual({ tools: {}, logging: {} });
     expect(await answer({ jsonrpc: "2.0", method: "notifications/initialized" })).toBeUndefined();
     const list = await answer({ jsonrpc: "2.0", id: 2, method: "tools/list" }) as { result: { tools: typeof TOOLS } };
-    expect(list.result.tools.map(tool => tool.name)).toEqual(["pair_device", "list_devices", "send_file", "send_text", "receive_files"]);
+    expect(list.result.tools.map(tool => tool.name)).toEqual(["pair_device", "list_devices", "send_file", "send_text", "receive_files", "request_photo", "request_scan", "request_file"]);
     const unknown = await answer({ jsonrpc: "2.0", id: 3, method: "resources/list" }) as { error: { code: number } };
     expect(unknown.error.code).toBe(-32601);
   });

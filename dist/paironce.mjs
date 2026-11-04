@@ -226,7 +226,10 @@ var helloSchema = z.object({
   // Agent as a Device v2 (protocol 2.3): this side is an AI agent, and how long the other device may keep it after it last
   // connected (an hour to 30 days). Both only ever limit or mark the pairing; a peer that predates them drops the keys.
   deviceKind: z.literal("agent").optional(),
-  forgetAfter: z.number().int().min(3600).max(30 * 86400).optional()
+  forgetAfter: z.number().int().min(3600).max(30 * 86400).optional(),
+  // Agent as a Device v3 (protocol 2.4): this side shows requests for a file, a photo or a scan and answers them. An
+  // agent asks only a peer that sent it; a peer that predates it drops the key and is never asked.
+  requests: z.literal(1).optional()
 });
 var signalMessageSchema = z.discriminatedUnion("type", [
   helloSchema,
@@ -272,6 +275,8 @@ var dataFrameSchema = z.discriminatedUnion("type", [
   // Live picture set-up (live-media.ts): requests, answers, the renegotiation description and the DTLS fingerprint
   // check. Sent only to a peer whose hello carried liveMedia; a description is larger than the other control frames.
   encryptedControlSchema.extend({ type: z.literal("live"), plainSize: z.number().int().positive().max(32 * 1024) }),
+  // A request for a file, a photo or a scan, its answer or its withdrawal (Agent as a Device v3), inside the frame key.
+  encryptedControlSchema.extend({ type: z.literal("request") }),
   z.object({
     v: z.literal(PROTOCOL_VERSION),
     type: z.literal("text"),
@@ -324,6 +329,15 @@ function parseSignalMessage(input) {
 }
 function parseDataFrame(input) {
   return dataFrameSchema.parse(input);
+}
+var REQUEST_KINDS = ["file", "photo", "scan"];
+var requestPayloadSchema = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("ask"), id: idSchema, kind: z.enum(REQUEST_KINDS), purpose: z.string().min(1).max(300) }).strict(),
+  z.object({ op: z.literal("answer"), id: idSchema, decision: z.enum(["decline", "send"]), count: z.number().int().min(1).max(20).optional() }).strict(),
+  z.object({ op: z.literal("withdraw"), id: idSchema }).strict()
+]);
+function parseRequestPayload(raw) {
+  return requestPayloadSchema.parse(JSON.parse(raw));
 }
 
 // ../../node_modules/@paironce/transfer/src/index.ts
@@ -1084,6 +1098,9 @@ function abortable(operation, signal) {
     else signal.addEventListener("abort", onAbort, { once: true });
   });
 }
+var REQUESTS_OPEN = 3;
+var REQUESTS_PER_WINDOW = 10;
+var REQUEST_WINDOW_MS = 10 * 6e4;
 var SIGNAL_PING_MS = 25e3;
 var SIGNAL_PING2 = '{"type":"ping"}';
 var SIGNAL_PONG2 = '{"type":"pong"}';
@@ -1180,6 +1197,10 @@ var PeerSession = class {
   #peerTunnel = false;
   /** The other side said it is an AI agent, and for how long it may be kept (Agent as a Device v2). */
   #peerAgent;
+  /** The other side shows requests (Agent as a Device v3); requests this side was asked recently, and those still open. */
+  #peerRequests = false;
+  #requestTimes = [];
+  #openRequests = /* @__PURE__ */ new Set();
   #tunnelTried = false;
   /** The peer's DTLS fingerprint, reported over the encrypted channel, matched the description signaling delivered. */
   #liveVerified = false;
@@ -1692,6 +1713,98 @@ var PeerSession = class {
     } catch (error) {
       this.#releaseRelay(relayClaim);
       throw error;
+    }
+  }
+  /** The other side shows requests (Agent as a Device v3), so this side may ask it for a file, a photo or a scan. */
+  peerTakesRequests() {
+    return this.#peerRequests && this.#paired;
+  }
+  /** Ask the other device for a file, a photo or a scan; answers arrive through onRequestAnswer. Returns the request's ID. */
+  async askFor(kind, purpose) {
+    this.#requirePairing();
+    if (!this.#peerRequests) throw new Error("The other device does not take requests. Update PairOnce there.");
+    const id = randomId();
+    await this.#sendRequest({ op: "ask", id, kind, purpose: purpose.trim().slice(0, 300) || kind });
+    return id;
+  }
+  /** The asker no longer waits for this request. */
+  async withdrawRequest(id) {
+    if (this.#paired) await this.#sendRequest({ op: "withdraw", id }).catch(() => {
+    });
+  }
+  /** Answer a request this side was shown: declined, or the number of files about to be offered for it. */
+  async answerRequest(id, answer2) {
+    this.#requirePairing();
+    if (!this.#openRequests.delete(id)) return;
+    await this.#sendRequest(answer2.decision === "send" ? { op: "answer", id, decision: "send", count: Math.min(20, Math.max(1, Math.round(answer2.count))) } : { op: "answer", id, decision: "decline" });
+  }
+  async #sendRequest(payload) {
+    const plaintext = new TextEncoder().encode(JSON.stringify(payload));
+    const transferId = randomId();
+    const noncePrefix = createNoncePrefix();
+    const ciphertext = await encryptChunk(await this.#requiredKey("send"), noncePrefix, plaintext, {
+      channel: this.#frameContext("send", "request"),
+      transferId,
+      kind: "text",
+      chunkIndex: 0,
+      totalChunks: 1,
+      plainSize: plaintext.byteLength
+    });
+    this.#sendFrame({
+      v: PROTOCOL_VERSION,
+      type: "request",
+      transferId,
+      noncePrefix: toBase64Url(noncePrefix),
+      ciphertext: toBase64Url(ciphertext),
+      plainSize: plaintext.byteLength
+    });
+  }
+  /**
+   * A request frame (Agent as a Device v3). Asks are shown only where this side takes requests, at most REQUESTS_OPEN open
+   * at a time and REQUESTS_PER_WINDOW in REQUEST_WINDOW_MS from one connection; more are declined without a card.
+   */
+  async #handleRequestFrame(frame, signal) {
+    this.#requirePairing();
+    const frameKey = `request:${frame.transferId}:${frame.noncePrefix}`;
+    if (this.#receivedFrameKeys.has(frameKey)) throw new Error("Encrypted request replay detected");
+    const plaintext = await decryptChunk(await this.#requiredKey("receive"), fromBase64Url(frame.noncePrefix), fromBase64Url(frame.ciphertext), {
+      channel: this.#frameContext("receive", "request"),
+      transferId: frame.transferId,
+      kind: "text",
+      chunkIndex: 0,
+      totalChunks: 1,
+      plainSize: frame.plainSize
+    });
+    signal.throwIfAborted();
+    if (!acceptFrameKey(this.#receivedFrameKeys, frameKey)) throw new Error("Encrypted request replay detected");
+    const payload = parseRequestPayload(new TextDecoder("utf-8", { fatal: true }).decode(plaintext));
+    if (payload.op === "answer") {
+      try {
+        this.#callbacks.onRequestAnswer?.(payload);
+      } catch {
+      }
+      return;
+    }
+    if (payload.op === "withdraw") {
+      if (this.#openRequests.delete(payload.id)) {
+        try {
+          this.#callbacks.onRequestWithdrawn?.(payload.id);
+        } catch {
+        }
+      }
+      return;
+    }
+    const now = Date.now();
+    while (this.#requestTimes.length && now - this.#requestTimes[0] > REQUEST_WINDOW_MS) this.#requestTimes.shift();
+    if (!this.#options.requests || this.#openRequests.size >= REQUESTS_OPEN || this.#requestTimes.length >= REQUESTS_PER_WINDOW) {
+      await this.#sendRequest({ op: "answer", id: payload.id, decision: "decline" });
+      return;
+    }
+    this.#requestTimes.push(now);
+    this.#openRequests.add(payload.id);
+    try {
+      this.#callbacks.onRequest?.({ id: payload.id, kind: payload.kind, purpose: payload.purpose });
+    } catch {
     }
   }
   /** The other side said it is an AI agent (Agent as a Device v2), and how long it asked to be kept; undefined otherwise. */
@@ -2304,6 +2417,7 @@ var PeerSession = class {
         this.#peerLiveMedia = message.liveMedia === 1;
         this.#peerTunnel = message.tunnel === 1;
         this.#peerAgent = message.deviceKind === "agent" ? { ...message.forgetAfter ? { forgetAfter: message.forgetAfter } : {} } : void 0;
+        this.#peerRequests = message.requests === 1;
         if (this.#options.deviceKeyAgreement && message.role !== this.#role) {
           const descriptor = { id: message.deviceId, name: message.deviceName, publicKey: message.devicePublicKey };
           if (!isDeviceDescriptor(descriptor)) throw new Error("The other device did not provide a valid identity");
@@ -2756,6 +2870,7 @@ var PeerSession = class {
       receiveWindow: 1,
       ...this.#options.liveMedia ? { liveMedia: 1 } : {},
       ...this.#tunnelOffered() ? { tunnel: 1 } : {},
+      ...this.#options.requests ? { requests: 1 } : {},
       ...this.#options.deviceKind === "agent" ? {
         deviceKind: "agent",
         ...this.#options.forgetAfter ? { forgetAfter: Math.round(Math.min(30 * 86400, Math.max(3600, this.#options.forgetAfter))) } : {}
@@ -2954,6 +3069,10 @@ var PeerSession = class {
     }
     if (frame.type === "live") {
       await this.#handleLiveFrame(frame, signal);
+      return;
+    }
+    if (frame.type === "request") {
+      await this.#handleRequestFrame(frame, signal);
       return;
     }
     this.#requirePairing();
@@ -4186,6 +4305,7 @@ async function connect(identity, target2, ui, options = {}) {
         void saving.then(() => resolve({ session, peer: peer ?? { ...room.expected, pairedAt: Date.now(), lastSeenAt: Date.now() }, path: path7, events, close: () => session.close() }));
       },
       onText: (text) => events.text?.(text),
+      onRequestAnswer: (answer2) => events.requestAnswer?.(answer2),
       onFile: (file) => events.file?.(file),
       onFileOffer: (offer) => events.offer?.(offer),
       onFileReceipt: (receipt) => events.receipt?.(receipt),
@@ -4384,7 +4504,7 @@ async function sendPath(link, file, report = say) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.5.0";
+var CLI_VERSION = "0.6.0";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}
@@ -4421,8 +4541,88 @@ var TOOLS = [
       folder: { type: "string", description: "Where to save, relative to the server's folder. Default: inbox." },
       wait_seconds: { type: "number", description: `How long to wait for the user, ${RECEIVE_WAIT.default} by default, at most ${RECEIVE_WAIT.max}.` }
     } }
-  }
+  },
+  ...["photo", "scan", "file"].map((kind) => ({
+    name: `request_${kind}`,
+    description: {
+      photo: "Ask the user for a photo from one of their paired devices (usually their phone), for example of a label, a screen, an error message or a document. Their device shows your request with your reason; they take the photo there and it is saved here (default ./inbox). They may decline.",
+      scan: "Ask the user to scan paper pages with one of their paired devices (usually their phone): it makes a PDF there with straightened pages, which is saved here (default ./inbox). Their device shows your request with your reason. They may decline.",
+      file: "Ask the user for a file from one of their paired devices: their device shows your request with your reason, they choose the file there, and it is saved here (default ./inbox). They may decline."
+    }[kind],
+    inputSchema: {
+      type: "object",
+      properties: {
+        purpose: { type: "string", description: "What you need and why, in one or two sentences the user reads on their device (at most 300 characters)." },
+        device: target,
+        folder: { type: "string", description: "Where to save, relative to the server's folder. Default: inbox." },
+        wait_seconds: { type: "number", description: `How long to wait for the user, ${RECEIVE_WAIT.default} by default, at most ${RECEIVE_WAIT.max}.` }
+      },
+      required: ["purpose"]
+    }
+  }))
 ];
+async function requestFrom(kind, args, device) {
+  const purpose = typeof args.purpose === "string" ? args.purpose.trim() : "";
+  if (!purpose) throw new Error("purpose is required: say what you need and why, in a sentence the user reads on their device.");
+  const seconds = Math.min(RECEIVE_WAIT.max, Math.max(10, typeof args.wait_seconds === "number" ? args.wait_seconds : RECEIVE_WAIT.default));
+  const folder = path5.resolve(typeof args.folder === "string" && args.folder ? args.folder : "inbox");
+  const deadline = Date.now() + seconds * 1e3;
+  const link = await openSaved(device, seconds, folder);
+  const saved = [];
+  const failures = [];
+  let expected = 0;
+  let announced = 0;
+  let pending = 0;
+  let declined = false;
+  try {
+    if (!link.session.peerTakesRequests()) throw new Error(`${link.peer.name} does not take requests yet: PairOnce there needs version 2.24 or later. Use receive_files and ask the user in the chat instead.`);
+    link.events.requestAnswer = (answer2) => {
+      if (answer2.decision === "decline") {
+        declined = true;
+        return;
+      }
+      expected += answer2.count ?? 1;
+      announced += answer2.count ?? 1;
+    };
+    await receiveInto(link, folder, {
+      // Only the files the answer announced: anything else the person sends now is declined, as it was not asked for.
+      accept: async () => {
+        if (expected < 1) return false;
+        expected--;
+        pending++;
+        return true;
+      },
+      saved: (file) => {
+        pending = Math.max(0, pending - 1);
+        saved.push(file);
+        notify(`Saved ${file}`);
+      },
+      failed: (name, message) => {
+        pending = Math.max(0, pending - 1);
+        failures.push(`${name}: ${message}`);
+      }
+    });
+    const id = await link.session.askFor(kind, purpose);
+    notify(`Asked ${link.peer.name} for ${kind === "file" ? "a file" : `a ${kind}`}: "${purpose}". Waiting for the user there.`);
+    let closed = false;
+    link.events.closed = () => {
+      closed = true;
+    };
+    while (Date.now() < deadline && !closed && !declined && !(announced > 0 && saved.length + failures.length >= announced && !pending)) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    if (!declined && !announced) await link.session.withdrawRequest(id);
+  } finally {
+    link.close();
+  }
+  if (declined) return `${link.peer.name} declined the request.`;
+  if (!announced) return `No answer from ${link.peer.name} within ${seconds} seconds; the request was withdrawn.`;
+  const parts = [saved.length ? `Saved ${saved.length} file${saved.length === 1 ? "" : "s"} from ${link.peer.name}:
+${saved.join("\n")}` : `${link.peer.name} accepted, but no file arrived within ${seconds} seconds.`];
+  if (failures.length) parts.push(`Not saved:
+${failures.join("\n")}`);
+  return parts.join("\n\n");
+}
 async function openSaved(device, seconds, folder) {
   const identity = await loadOrCreateIdentity();
   const devices = await listDevices();
@@ -4509,6 +4709,7 @@ async function callTool(name, args) {
   }
   const device = typeof args.device === "string" && args.device ? args.device : void 0;
   if (name === "receive_files") return receiveFiles(args, device);
+  if (name === "request_photo" || name === "request_scan" || name === "request_file") return requestFrom(name.slice("request_".length), args, device);
   if (name === "send_text") {
     if (typeof args.text !== "string" || !args.text) throw new Error("text is required.");
     const link = await openSaved(device, 120);
@@ -4701,8 +4902,8 @@ async function main(argv) {
   if (flags.agent || command === "mcp") process.env.PAIRONCE_AGENT = "1";
   if (flags.ephemeral) {
     process.env.PAIRONCE_AGENT = "1";
-    process.env.PAIRONCE_FORGET_AFTER ??= String(EPHEMERAL_FORGET_AFTER);
-    process.env.PAIRONCE_HOME ??= mkdtempSync(path6.join(tmpdir(), "paironce-"));
+    if (!process.env.PAIRONCE_FORGET_AFTER) process.env.PAIRONCE_FORGET_AFTER = String(EPHEMERAL_FORGET_AFTER);
+    if (!process.env.PAIRONCE_HOME) process.env.PAIRONCE_HOME = mkdtempSync(path6.join(tmpdir(), "paironce-"));
   }
   if (command === "mcp") return runMcp();
   const identity = await loadOrCreateIdentity();

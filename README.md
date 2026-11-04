@@ -37,13 +37,14 @@ When a paired device is not connected, the command asks it to connect: PairOnce 
 
 ## Use it from an AI agent (MCP)
 
-`paironce mcp` gives an agent five tools:
+`paironce mcp` gives an agent eight tools:
 
 | Tool | What it does |
 | --- | --- |
 | `pair_device` | Pairs one of your devices. You open paironce.com there and read out the six-digit code; your device then asks you to approve the agent after comparing the safety code. Once per device. |
 | `send_file`, `send_text` | Sends to a paired device; you accept every file there. |
 | `receive_files` | Waits while you send files from your device (a photo of a whiteboard, a scan, a document) and saves them into `./inbox`. |
+| `request_photo`, `request_scan`, `request_file` | Asks for something specific, with the reason. Your device shows the request; you take the photo, scan the pages or choose the file there, or decline. Saved into `./inbox`. |
 | `list_devices` | Lists the paired devices. |
 
 The agent reaches only devices you paired and approved, and nothing arrives anywhere unasked. Your device marks it
@@ -63,7 +64,7 @@ Other clients (Cursor, Claude Desktop and others), in their MCP configuration:
 { "mcpServers": { "paironce": { "command": "npx", "args": ["-y", "paironce", "mcp"], "env": { "PAIRONCE_NAME": "Cursor · Agent" } } } }
 ```
 
-Then ask: "pair with my phone", "send the build log to my phone" or "I'll send you a photo of the error from my phone".
+Then ask: "pair with my phone", "send the build log to my phone", or let the agent ask you: "I need a photo of the label on the back of the router".
 
 ## How it works
 

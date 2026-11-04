@@ -1,11 +1,13 @@
 /**
  * `paironce mcp`: a Model Context Protocol server on stdin/stdout (JSON-RPC 2.0, one message per line), so an AI agent
- * (Claude Code, Cursor, …) can work with the person's own devices. Five tools:
+ * (Claude Code, Cursor, …) can work with the person's own devices. Eight tools:
  *
  * - pair_device: join with the six-digit code the person's device shows; the person approves on that device after
  *   comparing the safety code (sent to the client as a log message too).
  * - send_file, send_text: to a paired device; the device accepts every file itself.
  * - receive_files: wait for the person to send files from a paired device; they land in a folder (default ./inbox).
+ * - request_photo, request_scan, request_file: ask for something specific, with the reason; the person's device shows the
+ *   request and the person answers by taking a photo, scanning or choosing files, or declines. Never answered for them.
  * - list_devices.
  *
  * The agent never reaches a device the person did not pair and approve, and nothing arrives anywhere unasked. Set
@@ -42,7 +44,63 @@ export const TOOLS = [
     inputSchema: { type: "object", properties: { device: target,
       folder: { type: "string", description: "Where to save, relative to the server's folder. Default: inbox." },
       wait_seconds: { type: "number", description: `How long to wait for the user, ${RECEIVE_WAIT.default} by default, at most ${RECEIVE_WAIT.max}.` } } } },
+  ...(["photo", "scan", "file"] as const).map(kind => ({
+    name: `request_${kind}`,
+    description: {
+      photo: "Ask the user for a photo from one of their paired devices (usually their phone), for example of a label, a screen, an error message or a document. Their device shows your request with your reason; they take the photo there and it is saved here (default ./inbox). They may decline.",
+      scan: "Ask the user to scan paper pages with one of their paired devices (usually their phone): it makes a PDF there with straightened pages, which is saved here (default ./inbox). Their device shows your request with your reason. They may decline.",
+      file: "Ask the user for a file from one of their paired devices: their device shows your request with your reason, they choose the file there, and it is saved here (default ./inbox). They may decline.",
+    }[kind],
+    inputSchema: { type: "object", properties: {
+      purpose: { type: "string", description: "What you need and why, in one or two sentences the user reads on their device (at most 300 characters)." },
+      device: target,
+      folder: { type: "string", description: "Where to save, relative to the server's folder. Default: inbox." },
+      wait_seconds: { type: "number", description: `How long to wait for the user, ${RECEIVE_WAIT.default} by default, at most ${RECEIVE_WAIT.max}.` } },
+      required: ["purpose"] },
+  })),
 ];
+
+/**
+ * Ask the connected device for a photo, a scan or a file, and take exactly the files its answer announces. Without an
+ * answer in time the request is withdrawn, so the card does not stay on the person's device.
+ */
+async function requestFrom(kind: "photo" | "scan" | "file", args: Record<string, unknown>, device: string | undefined): Promise<string> {
+  const purpose = typeof args.purpose === "string" ? args.purpose.trim() : "";
+  if (!purpose) throw new Error("purpose is required: say what you need and why, in a sentence the user reads on their device.");
+  const seconds = Math.min(RECEIVE_WAIT.max, Math.max(10, typeof args.wait_seconds === "number" ? args.wait_seconds : RECEIVE_WAIT.default));
+  const folder = path.resolve(typeof args.folder === "string" && args.folder ? args.folder : "inbox");
+  const deadline = Date.now() + seconds * 1000;
+  const link = await openSaved(device, seconds, folder);
+  const saved: string[] = []; const failures: string[] = [];
+  let expected = 0; let announced = 0; let pending = 0; let declined = false;
+  try {
+    if (!link.session.peerTakesRequests()) throw new Error(`${link.peer.name} does not take requests yet: PairOnce there needs version 2.24 or later. Use receive_files and ask the user in the chat instead.`);
+    link.events.requestAnswer = answer => {
+      if (answer.decision === "decline") { declined = true; return; }
+      expected += answer.count ?? 1; announced += answer.count ?? 1;
+    };
+    await receiveInto(link, folder, {
+      // Only the files the answer announced: anything else the person sends now is declined, as it was not asked for.
+      accept: async () => { if (expected < 1) return false; expected--; pending++; return true; },
+      saved: file => { pending = Math.max(0, pending - 1); saved.push(file); notify(`Saved ${file}`); },
+      failed: (name, message) => { pending = Math.max(0, pending - 1); failures.push(`${name}: ${message}`); },
+    });
+    const id = await link.session.askFor(kind, purpose);
+    notify(`Asked ${link.peer.name} for ${kind === "file" ? "a file" : `a ${kind}`}: "${purpose}". Waiting for the user there.`);
+    let closed = false;
+    link.events.closed = () => { closed = true; };
+    while (Date.now() < deadline && !closed && !declined && !(announced > 0 && saved.length + failures.length >= announced && !pending)) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    if (!declined && !announced) await link.session.withdrawRequest(id);
+  } finally { link.close(); }
+  if (declined) return `${link.peer.name} declined the request.`;
+  if (!announced) return `No answer from ${link.peer.name} within ${seconds} seconds; the request was withdrawn.`;
+  const parts = [saved.length ? `Saved ${saved.length} file${saved.length === 1 ? "" : "s"} from ${link.peer.name}:\n${saved.join("\n")}`
+    : `${link.peer.name} accepted, but no file arrived within ${seconds} seconds.`];
+  if (failures.length) parts.push(`Not saved:\n${failures.join("\n")}`);
+  return parts.join("\n\n");
+}
 
 async function openSaved(device: string | undefined, seconds: number, folder?: string): Promise<Link> {
   const identity = await loadOrCreateIdentity();
@@ -103,6 +161,7 @@ export async function callTool(name: string, args: Record<string, unknown>): Pro
   }
   const device = typeof args.device === "string" && args.device ? args.device : undefined;
   if (name === "receive_files") return receiveFiles(args, device);
+  if (name === "request_photo" || name === "request_scan" || name === "request_file") return requestFrom(name.slice("request_".length) as "photo" | "scan" | "file", args, device);
   if (name === "send_text") {
     if (typeof args.text !== "string" || !args.text) throw new Error("text is required.");
     const link = await openSaved(device, 120);

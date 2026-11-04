@@ -132,8 +132,9 @@ async function main(argv: string[]): Promise<number> {
   if (flags.agent || command === "mcp") process.env.PAIRONCE_AGENT = "1";
   if (flags.ephemeral) {
     process.env.PAIRONCE_AGENT = "1";
-    process.env.PAIRONCE_FORGET_AFTER ??= String(EPHEMERAL_FORGET_AFTER);
-    process.env.PAIRONCE_HOME ??= mkdtempSync(path.join(tmpdir(), "paironce-"));
+    // An empty variable counts as unset, as store.ts reads it.
+    if (!process.env.PAIRONCE_FORGET_AFTER) process.env.PAIRONCE_FORGET_AFTER = String(EPHEMERAL_FORGET_AFTER);
+    if (!process.env.PAIRONCE_HOME) process.env.PAIRONCE_HOME = mkdtempSync(path.join(tmpdir(), "paironce-"));
   }
   if (command === "mcp") return runMcp();
   const identity = await loadOrCreateIdentity();

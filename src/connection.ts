@@ -31,6 +31,8 @@ export interface LinkEvents {
   receipt?(receipt: FileReceipt): void;
   progress?(name: string, fraction: number, direction?: "sent" | "received"): void;
   text?(text: string): void;
+  /** The other device answered a request for a file, a photo or a scan (Agent as a Device v3). */
+  requestAnswer?(answer: { id: string; decision: "decline" | "send"; count?: number }): void;
   error?(message: string): void;
   closed?(): void;
 }
@@ -131,6 +133,7 @@ export async function connect(identity: DeviceIdentity, target: Target, ui: Conn
         void saving.then(() => resolve({ session, peer: peer ?? { ...(room.expected as DeviceDescriptor), pairedAt: Date.now(), lastSeenAt: Date.now() }, path, events, close: () => session.close() }));
       },
       onText: text => events.text?.(text),
+      onRequestAnswer: answer => events.requestAnswer?.(answer),
       onFile: file => events.file?.(file),
       onFileOffer: offer => events.offer?.(offer),
       onFileReceipt: receipt => events.receipt?.(receipt),
