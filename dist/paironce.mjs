@@ -6,13 +6,19 @@ var define_import_meta_env_default = {};
 
 // src/env.ts
 import wrtc from "@roamhq/wrtc";
+import * as datachannel from "node-datachannel/polyfill";
 var [major] = process.versions.node.split(".").map(Number);
 if (!major || major < 22) {
   console.error(`PairOnce needs Node.js 22 or later (this is ${process.versions.node}).`);
   process.exit(1);
 }
-var { RTCPeerConnection: RTCPeerConnection2, RTCSessionDescription, RTCIceCandidate, RTCDataChannel } = wrtc;
-Object.assign(globalThis, { RTCPeerConnection: RTCPeerConnection2, RTCSessionDescription, RTCIceCandidate, RTCDataChannel });
+var usesRelay = (config) => config?.iceTransportPolicy === "relay" || Boolean(config?.iceServers?.some((server) => [server.urls].flat().some((url) => /^turns?:/i.test(url))));
+var RTCPeerConnection3 = class {
+  constructor(config) {
+    return usesRelay(config) ? new wrtc.RTCPeerConnection(config) : new datachannel.RTCPeerConnection(config);
+  }
+};
+Object.assign(globalThis, { RTCPeerConnection: RTCPeerConnection3, RTCSessionDescription: datachannel.RTCSessionDescription, RTCIceCandidate: datachannel.RTCIceCandidate });
 
 // src/cli.ts
 import { createInterface as createInterface2 } from "node:readline/promises";
@@ -1611,6 +1617,10 @@ var PeerSession = class {
       this.#releaseRelay(relayClaim);
       throw error;
     }
+  }
+  /** Resolves once everything sent so far has left this device (the channel's buffer is empty), e.g. before closing. */
+  async drained() {
+    await this.#waitForWritableChannel(void 0, true);
   }
   /** Whether the negotiated peer supports aborting one file without closing the session. */
   canCancelFileIndependently() {
@@ -4170,7 +4180,7 @@ async function sendPath(link, file, report = say) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.2.0-rc.2";
+var CLI_VERSION = "0.2.0-rc.3";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}
@@ -4209,6 +4219,7 @@ async function callTool(name, args) {
     const link = await openSaved(device);
     try {
       await link.session.sendText(args.text);
+      await link.session.drained();
       return `Sent to ${link.peer.name}.`;
     } finally {
       link.close();
@@ -4451,6 +4462,8 @@ async function main(argv) {
     const link = await open(identity, typeof flags.to === "string" ? flags.to : void 0);
     try {
       await link.session.sendText(text);
+      await link.session.drained();
+      await new Promise((resolve) => setTimeout(resolve, 1500));
       say(`Sent to ${link.peer.name}.`);
     } finally {
       link.close();

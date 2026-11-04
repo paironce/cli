@@ -152,7 +152,13 @@ async function main(argv: string[]): Promise<number> {
     const text = args.join(" ");
     if (!text) { say('Write the message: paironce text "https://example.com"'); return 1; }
     const link = await open(identity, typeof flags.to === "string" ? flags.to : undefined);
-    try { await link.session.sendText(text); say(`Sent to ${link.peer.name}.`); } finally { link.close(); }
+    try {
+      await link.session.sendText(text);
+      // A message has no receipt: let it leave the buffer and cross the relay before this process ends the connection.
+      await link.session.drained();
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      say(`Sent to ${link.peer.name}.`);
+    } finally { link.close(); }
     return 0;
   }
   if (command === "receive") {

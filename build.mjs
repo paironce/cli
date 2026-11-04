@@ -1,5 +1,5 @@
 // Bundles the CLI into one file, dist/paironce.mjs: the web app's own connection code (apps/app/src/session.ts and what
-// it imports) with the production settings of paironce.com; @roamhq/wrtc and zod stay dependencies.
+// it imports) with the production settings of paironce.com; the two WebRTC libraries and zod stay dependencies.
 import { build } from 'esbuild';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -15,7 +15,7 @@ await build({
   outfile: `${here}dist/paironce.mjs`,
   bundle: true, platform: 'node', format: 'esm', target: 'node22',
   // Installed next to it rather than copied in, each with its own license: WebRTC (native) and zod.
-  external: ['@roamhq/wrtc', 'zod', 'zod/*'],
+  external: ['@roamhq/wrtc', 'node-datachannel', 'node-datachannel/*', 'zod', 'zod/*'],
   // The same values as the paironce.com build (apps/app/.env.realtime-beta.example), with the site as the signaling origin.
   define: {
     'import.meta.env.VITE_SIGNALING_URL': JSON.stringify(origin),

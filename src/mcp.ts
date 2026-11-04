@@ -40,7 +40,7 @@ export async function callTool(name: string, args: Record<string, unknown>): Pro
   if (name === "send_text") {
     if (typeof args.text !== "string" || !args.text) throw new Error("text is required.");
     const link = await openSaved(device);
-    try { await link.session.sendText(args.text); return `Sent to ${link.peer.name}.`; } finally { link.close(); }
+    try { await link.session.sendText(args.text); await link.session.drained(); return `Sent to ${link.peer.name}.`; } finally { link.close(); }
   }
   if (name === "send_file") {
     const paths = Array.isArray(args.paths) ? args.paths.filter((item): item is string => typeof item === "string") : [];
