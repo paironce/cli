@@ -11,9 +11,9 @@ on:
       network:
         description: normal or no-udp
         default: normal
-      version:
-        description: paironce version from npm
-        default: latest
+      package:
+        description: What to install (paironce@latest, or github:paironce/cli#next for a candidate)
+        default: paironce@latest
 permissions:
   contents: read
 jobs:
@@ -26,7 +26,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-      - run: npm install -g paironce@${{ inputs.version }} && paironce --version
+      - run: npm install -g "${{ inputs.package }}" && paironce --version
       - name: Block outbound UDP except DNS
         if: inputs.network == 'no-udp'
         run: |
