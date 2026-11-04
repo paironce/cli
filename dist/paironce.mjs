@@ -5,6 +5,7 @@
 var define_import_meta_env_default = {};
 
 // src/env.ts
+import { initLogger } from "node-datachannel";
 import { RTCDataChannel, RTCIceCandidate, RTCPeerConnection as RTCPeerConnection2, RTCSessionDescription } from "node-datachannel/polyfill";
 var [major] = process.versions.node.split(".").map(Number);
 if (!major || major < 22) {
@@ -12,6 +13,7 @@ if (!major || major < 22) {
   process.exit(1);
 }
 Object.assign(globalThis, { RTCPeerConnection: RTCPeerConnection2, RTCSessionDescription, RTCIceCandidate, RTCDataChannel });
+if (process.env.PAIRONCE_DEBUG) initLogger("Debug");
 
 // src/cli.ts
 import { createInterface as createInterface2 } from "node:readline/promises";
@@ -4167,7 +4169,7 @@ async function sendPath(link, file, report = say) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.1.1";
+var CLI_VERSION = "0.1.2";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}

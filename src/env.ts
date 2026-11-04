@@ -3,6 +3,7 @@
  * standard RTCPeerConnection API, the libdatachannel library underneath). WebSocket, fetch, File, Blob and Web Crypto
  * are Node's own (22 or later).
  */
+import { initLogger } from "node-datachannel";
 import { RTCDataChannel, RTCIceCandidate, RTCPeerConnection, RTCSessionDescription } from "node-datachannel/polyfill";
 
 const [major] = process.versions.node.split(".").map(Number);
@@ -11,3 +12,5 @@ if (!major || major < 22) {
   process.exit(1);
 }
 Object.assign(globalThis, { RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, RTCDataChannel });
+// PAIRONCE_DEBUG=1 prints the WebRTC library's own log (ICE candidates, relay allocation) to stderr, for network problems.
+if (process.env.PAIRONCE_DEBUG) initLogger("Debug");
