@@ -22,6 +22,7 @@ jobs:
     timeout-minutes: 15
     env:
       PAIRONCE_HOME: /tmp/paironce-check
+      PAIRONCE_DEBUG: "1"
     steps:
       - uses: actions/setup-node@v5
         with:
@@ -37,8 +38,6 @@ jobs:
           sudo ip6tables -A OUTPUT -o lo -j ACCEPT
           sudo ip6tables -A OUTPUT -p udp -j DROP
       - run: paironce pair "${{ inputs.code }}"
-        env:
-          PAIRONCE_DEBUG: ${{ inputs.network == 'no-udp' && '1' || '' }}
       - run: printf 'Sent from a GitHub Actions runner (%s network) at %s\n' "${{ inputs.network }}" "$(date -u)" > runner-check.txt
       - run: paironce send runner-check.txt
       - run: paironce text "runner says hello (${{ inputs.network }})"
