@@ -59,7 +59,7 @@ async function open(identity: DeviceIdentity, name: string | undefined, folder?:
   if (picked === "ambiguous") throw new Error(`Which device? Use --to with one of: ${devices.map(device => `"${device.name}"`).join(", ")}`);
   if (picked === "none" && name) throw new Error(`No paired device is called "${name}". Run "paironce devices" to see them.`);
   const target: Target = picked === "none" ? { kind: "host" } : { kind: "saved", device: picked };
-  if (target.kind === "saved") say(`Connecting to ${target.device.name}… Open https://paironce.com there and tap Connect next to "${identity.name}".`);
+  if (target.kind === "saved") say(`Connecting to ${target.device.name}… Open https://paironce.com there: it shows "${identity.name} wants to reconnect"; tap Connect.`);
   const diskReceive = folder ? createDiskReceiver(folder) : undefined;
   const link = await connect(identity, target, terminalUi, { diskReceive, signal: AbortSignal.timeout(target.kind === "saved" ? 180_000 : 600_000) });
   say(`Connected to ${link.peer.name} (${link.path === "turn" ? "through the encrypted relay" : "direct"}).`);

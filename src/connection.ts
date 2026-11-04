@@ -92,7 +92,7 @@ export async function connect(identity: DeviceIdentity, target: Target, ui: Conn
       reject(error instanceof Error ? error : new Error(String(error)));
     };
     options.signal?.addEventListener("abort", () => fail(new Error(returning
-      ? `${returning.name} did not connect. Open https://paironce.com there and tap Connect next to "${identity.name}", then try again.`
+      ? `${returning.name} did not connect. Open https://paironce.com there, tap Connect where it says "${identity.name} wants to reconnect", then try again.`
       : "Nobody connected in time. Try again.")), { once: true });
     const callbacks: SessionCallbacks = {
       onStatus: text => {

@@ -3959,7 +3959,7 @@ async function connect(identity, target2, ui, options = {}) {
       session?.close();
       reject(error instanceof Error ? error : new Error(String(error)));
     };
-    options.signal?.addEventListener("abort", () => fail(new Error(returning ? `${returning.name} did not connect. Open https://paironce.com there and tap Connect next to "${identity.name}", then try again.` : "Nobody connected in time. Try again.")), { once: true });
+    options.signal?.addEventListener("abort", () => fail(new Error(returning ? `${returning.name} did not connect. Open https://paironce.com there, tap Connect where it says "${identity.name} wants to reconnect", then try again.` : "Nobody connected in time. Try again.")), { once: true });
     const callbacks = {
       onStatus: (text) => {
         if (text === "Transfer channel closed") {
@@ -4167,7 +4167,7 @@ async function sendPath(link, file, report = say) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.1.0";
+var CLI_VERSION = "0.1.1";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}
@@ -4321,7 +4321,7 @@ async function open(identity, name, folder) {
   if (picked === "ambiguous") throw new Error(`Which device? Use --to with one of: ${devices.map((device) => `"${device.name}"`).join(", ")}`);
   if (picked === "none" && name) throw new Error(`No paired device is called "${name}". Run "paironce devices" to see them.`);
   const target2 = picked === "none" ? { kind: "host" } : { kind: "saved", device: picked };
-  if (target2.kind === "saved") say(`Connecting to ${target2.device.name}\u2026 Open https://paironce.com there and tap Connect next to "${identity.name}".`);
+  if (target2.kind === "saved") say(`Connecting to ${target2.device.name}\u2026 Open https://paironce.com there: it shows "${identity.name} wants to reconnect"; tap Connect.`);
   const diskReceive = folder ? createDiskReceiver(folder) : void 0;
   const link = await connect(identity, target2, terminalUi, { diskReceive, signal: AbortSignal.timeout(target2.kind === "saved" ? 18e4 : 6e5) });
   say(`Connected to ${link.peer.name} (${link.path === "turn" ? "through the encrypted relay" : "direct"}).`);

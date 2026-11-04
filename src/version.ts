@@ -1,2 +1,2 @@
 /** The CLI's own version (packages/cli/package.json); the build checks they match. */
-export const CLI_VERSION = "0.1.0";
+export const CLI_VERSION = "0.1.1";
