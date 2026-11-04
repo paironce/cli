@@ -13,7 +13,10 @@ if (!major || major < 22) {
   process.exit(1);
 }
 Object.assign(globalThis, { RTCPeerConnection: RTCPeerConnection2, RTCSessionDescription, RTCIceCandidate, RTCDataChannel });
-if (process.env.PAIRONCE_DEBUG) initLogger("Debug");
+if (process.env.PAIRONCE_DEBUG) initLogger("Debug", (level, message) => {
+  process.stderr.write(`[webrtc ${level}] ${message}
+`);
+});
 
 // src/cli.ts
 import { createInterface as createInterface2 } from "node:readline/promises";
@@ -4169,7 +4172,7 @@ async function sendPath(link, file, report = say) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.1.2";
+var CLI_VERSION = "0.1.3";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}

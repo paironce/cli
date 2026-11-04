@@ -13,4 +13,5 @@ if (!major || major < 22) {
 }
 Object.assign(globalThis, { RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, RTCDataChannel });
 // PAIRONCE_DEBUG=1 prints the WebRTC library's own log (ICE candidates, relay allocation) to stderr, for network problems.
-if (process.env.PAIRONCE_DEBUG) initLogger("Debug");
+if (process.env.PAIRONCE_DEBUG) initLogger("Debug", (level, message) => { process.stderr.write(`[webrtc ${level}] ${message}
+`); });
