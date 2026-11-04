@@ -21,6 +21,7 @@ var RTCPeerConnection3 = class {
 Object.assign(globalThis, { RTCPeerConnection: RTCPeerConnection3, RTCSessionDescription: datachannel.RTCSessionDescription, RTCIceCandidate: datachannel.RTCIceCandidate });
 
 // src/cli.ts
+import { spawn } from "node:child_process";
 import { createInterface as createInterface2 } from "node:readline/promises";
 import path6 from "node:path";
 
@@ -215,7 +216,11 @@ var helloSchema = z.object({
   proPass: z.string().regex(/^[A-Za-z0-9_-]{40,400}\.[A-Za-z0-9_-]{86}$/).optional(),
   // This side can show and watch a live picture (camera or screen) over this connection, set up by encrypted `live`
   // frames. Optional like the flags above: a peer that predates it drops the key and is never sent a `live` frame.
-  liveMedia: z.literal(1).optional()
+  liveMedia: z.literal(1).optional(),
+  // This side can fall back to the WebSocket tunnel (2.22.0, protocol 2.2) when neither a direct path nor the TURN relay
+  // connects. Optional like the flags above: a peer that predates it drops the key, and the tunnel is used only when both
+  // hellos carry it.
+  tunnel: z.literal(1).optional()
 });
 var signalMessageSchema = z.discriminatedUnion("type", [
   helloSchema,
@@ -648,6 +653,67 @@ function timeoutSignal(milliseconds) {
   return controller.signal;
 }
 
+// ../../apps/app/src/tunnel-channel.ts
+var SIGNAL_PING = '{"type":"ping"}';
+var SIGNAL_PONG = '{"type":"pong"}';
+var TUNNEL_OPEN_TIMEOUT_MS = 3e4;
+var TUNNEL_PING_MS = 25e3;
+var TUNNEL_OPEN = '{"v":1,"type":"tunnel-open"}';
+var TunnelChannel = class extends EventTarget {
+  label = "paironce-tunnel";
+  binaryType = "arraybuffer";
+  /** Kept for the RTCDataChannel shape; session.ts also polls bufferedAmount, so no event is needed. */
+  bufferedAmountLowThreshold = 0;
+  #socket;
+  #open = false;
+  #ping;
+  constructor(socket) {
+    super();
+    this.#socket = socket;
+    socket.binaryType = "arraybuffer";
+    socket.addEventListener("message", (event) => {
+      if (event.data === SIGNAL_PONG) return;
+      if (!this.#open) {
+        if (event.data === TUNNEL_OPEN) {
+          this.#open = true;
+          this.#ping = setInterval(() => {
+            try {
+              socket.send(SIGNAL_PING);
+            } catch {
+            }
+          }, TUNNEL_PING_MS);
+          this.dispatchEvent(new Event("open"));
+        }
+        return;
+      }
+      this.dispatchEvent(new MessageEvent("message", { data: event.data }));
+    });
+    socket.addEventListener("close", () => {
+      clearInterval(this.#ping);
+      this.dispatchEvent(new Event(this.#open ? "close" : "failed"));
+    });
+  }
+  get readyState() {
+    if (this.#socket.readyState === WebSocket.CLOSED) return "closed";
+    if (this.#socket.readyState === WebSocket.CLOSING) return "closing";
+    return this.#open ? "open" : "connecting";
+  }
+  get bufferedAmount() {
+    return this.#socket.bufferedAmount;
+  }
+  send(data) {
+    if (!this.#open) throw new Error("The tunnel is not open");
+    this.#socket.send(data);
+  }
+  close() {
+    clearInterval(this.#ping);
+    try {
+      this.#socket.close(1e3, "Closed");
+    } catch {
+    }
+  }
+};
+
 // ../../apps/app/src/file-control.ts
 var MAX_FILE_SIZE = 5e7;
 var LARGE_FILE_MAX_BYTES = 2e9;
@@ -1013,8 +1079,8 @@ function abortable(operation, signal) {
   });
 }
 var SIGNAL_PING_MS = 25e3;
-var SIGNAL_PING = '{"type":"ping"}';
-var SIGNAL_PONG = '{"type":"pong"}';
+var SIGNAL_PING2 = '{"type":"ping"}';
+var SIGNAL_PONG2 = '{"type":"pong"}';
 var CODE_RATE_LIMIT_RETRY_MS = [5e3, 15e3, 45e3];
 function codeRetryDelay(status, limitedSoFar) {
   return status === 429 ? CODE_RATE_LIMIT_RETRY_MS[limitedSoFar] : void 0;
@@ -1104,6 +1170,9 @@ var PeerSession = class {
   // Both hellos announced the receive window (receive-window.ts, 2026-10-21 audit F02).
   #peerReceiveWindow = false;
   #peerLiveMedia = false;
+  /** The other side offered the tunnel in its hello; this connection tried it already. */
+  #peerTunnel = false;
+  #tunnelTried = false;
   /** The peer's DTLS fingerprint, reported over the encrypted channel, matched the description signaling delivered. */
   #liveVerified = false;
   #pendingLiveFingerprint;
@@ -1192,7 +1261,7 @@ var PeerSession = class {
     socket.addEventListener("open", () => {
       if (this.#closed || this.#socket !== socket) return;
       this.#signalKeepAlive = setInterval(() => {
-        if (this.#socket === socket && socket.readyState === WebSocket.OPEN) socket.send(SIGNAL_PING);
+        if (this.#socket === socket && socket.readyState === WebSocket.OPEN) socket.send(SIGNAL_PING2);
       }, SIGNAL_PING_MS);
       if (!recovering) this.#callbacks.onStatus("Waiting for the other browser\u2026");
       this.#sendHello();
@@ -1200,7 +1269,7 @@ var PeerSession = class {
       if (recovering) this.#attemptDisconnectRecovery();
     });
     socket.addEventListener("message", (event) => {
-      if (event.data === SIGNAL_PONG) return;
+      if (event.data === SIGNAL_PONG2) return;
       if (this.#socket === socket) this.#queueSignal(event.data);
     });
     socket.addEventListener("error", () => {
@@ -1617,6 +1686,10 @@ var PeerSession = class {
       throw error;
     }
   }
+  /** True when this connection runs through the WebSocket tunnel (2.22.0) rather than a data channel. */
+  usesTunnel() {
+    return this.#channel instanceof TunnelChannel;
+  }
   /** Resolves once everything sent so far has left this device (the channel's buffer is empty), e.g. before closing. */
   async drained() {
     await this.#waitForWritableChannel(void 0, true);
@@ -1959,6 +2032,10 @@ var PeerSession = class {
    * session closes and when the page goes away. A report that fails is kept for the next one.
    */
   async flushRelayUsage() {
+    if (this.#channel instanceof TunnelChannel) {
+      this.#relayUnreported = 0;
+      return;
+    }
     if (!this.#relayAllowance || this.#relayUnreported < 1 || this.#relayReporting) return this.#relayReporting;
     const bytes = this.#relayUnreported;
     this.#relayUnreported = 0;
@@ -2179,6 +2256,10 @@ var PeerSession = class {
         else pending.reject(new Error("Relay connection is currently unavailable"));
         return;
       }
+      if (decoded?.v === 1 && decoded.type === "tunnel-requested") {
+        if (this.#tunnelPossible()) void this.#beginTunnel();
+        return;
+      }
       if (decoded?.v === 1 && decoded.type === "code-claimed") {
         if (this.#role === "host") this.#callbacks.onConnectionCodeClaimed?.();
         return;
@@ -2209,6 +2290,7 @@ var PeerSession = class {
         }
         this.#peerReceiveWindow = message.receiveWindow === 1;
         this.#peerLiveMedia = message.liveMedia === 1;
+        this.#peerTunnel = message.tunnel === 1;
         if (this.#options.deviceKeyAgreement && message.role !== this.#role) {
           const descriptor = { id: message.deviceId, name: message.deviceName, publicKey: message.devicePublicKey };
           if (!isDeviceDescriptor(descriptor)) throw new Error("The other device did not provide a valid identity");
@@ -2255,6 +2337,7 @@ var PeerSession = class {
         }
         return;
       }
+      if (this.#channel instanceof TunnelChannel) return;
       if (message.type !== "ice") {
         const peerNonce = fromBase64Url(message.sessionNonce);
         if (peerNonce.byteLength !== 16) throw new Error("Invalid DataChannel session nonce");
@@ -2302,7 +2385,7 @@ var PeerSession = class {
     }
   }
   async #makeOffer() {
-    if (this.#offered) return;
+    if (this.#offered || this.#channel instanceof TunnelChannel) return;
     this.#offered = true;
     const generation = this.#peerGeneration;
     const peer = await this.#ensurePeer();
@@ -2425,10 +2508,59 @@ var PeerSession = class {
       });
       return;
     }
+    if (this.#forceRelay && this.#tunnelPossible()) {
+      void this.#beginTunnel();
+      return;
+    }
     this.#clearConnectionTimer();
     this.#callbacks.onError(
       this.#forceRelay ? "The TURN relay connection failed." : "The peer connection failed."
     );
+  }
+  #tunnelOffered() {
+    return this.#options.tunnel !== false && !this.#options.directOnly && (!this.#realtimeOnly || this.#relayFallback) && typeof WebSocket !== "undefined";
+  }
+  /** Only while connecting: a connection that is up keeps its own path (a failed relay renewal still ends it). */
+  #tunnelPossible() {
+    return !this.#tunnelTried && !this.#connectionReady && this.#peerTunnel && this.#tunnelOffered() && !this.#closed;
+  }
+  /**
+   * The direct attempt and the TURN relay both failed: carry the data-channel frames over a WebSocket through the pairing
+   * room instead (tunnel-channel.ts). Both pages get here on their own; the room opens the tunnel once both are in it.
+   * The frames are encrypted exactly as on a data channel, and the room counts the bytes against the relay allowance.
+   */
+  async #beginTunnel() {
+    this.#tunnelTried = true;
+    this.#clearConnectionTimer();
+    this.#callbacks.onStatus("The relay did not connect; connecting through the PairOnce tunnel\u2026");
+    this.#resetPeer();
+    if (this.#socket?.readyState === WebSocket.OPEN) this.#sendHello();
+    const generation = this.#peerGeneration;
+    const failed = () => {
+      if (generation !== this.#peerGeneration || this.#closed || this.#connectionReady) return;
+      this.#callbacks.onError("The TURN relay connection failed.");
+    };
+    const endpoint = this.#edgeEndpoint(`/v1/pair/${this.#roomId}/tunnel`, "websocket");
+    endpoint.searchParams.set("session", this.#sessionId);
+    let channel;
+    try {
+      channel = new TunnelChannel(new WebSocket(endpoint));
+    } catch {
+      failed();
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (channel.readyState !== "open") {
+        channel.close();
+        failed();
+      }
+    }, TUNNEL_OPEN_TIMEOUT_MS);
+    channel.addEventListener("open", () => clearTimeout(timer), { once: true });
+    channel.addEventListener("failed", () => {
+      clearTimeout(timer);
+      failed();
+    }, { once: true });
+    this.#attachChannel(channel);
   }
   #beginDisconnectRecovery(peer) {
     if (this.#disconnectTimer !== void 0 || this.#closed || this.#peer !== peer) return;
@@ -2542,6 +2674,7 @@ var PeerSession = class {
       try {
         await this.#makeOffer();
       } catch (error) {
+        if (error instanceof Error && error.message === "Peer connection superseded") return;
         this.#callbacks.onError(error instanceof Error ? error.message : "TURN relay unavailable");
       }
     }
@@ -2609,6 +2742,7 @@ var PeerSession = class {
       ...this.#options.isPro?.() ? { pro: 1, ...this.#options.proPass?.() ? { proPass: this.#options.proPass() } : {} } : {},
       receiveWindow: 1,
       ...this.#options.liveMedia ? { liveMedia: 1 } : {},
+      ...this.#tunnelOffered() ? { tunnel: 1 } : {},
       sessionNonce: toBase64Url(this.#channelNonce),
       ...this.#localCapabilities().length > 0 ? { capabilities: this.#localCapabilities() } : {},
       ...this.#options.deviceKeyAgreement ? { safetyCode: 2 } : {},
@@ -2675,6 +2809,10 @@ var PeerSession = class {
       }, expiresAt - Date.now());
       return payload.iceServers;
     } catch (error) {
+      if (forceRelay && this.#tunnelPossible() && !(error instanceof Error && error.message === RELAY_QUOTA_MESSAGE)) {
+        void this.#beginTunnel();
+        throw new Error("Peer connection superseded");
+      }
       if (forceRelay) {
         throw new Error(
           error instanceof Error ? `TURN relay unavailable: ${error.message}` : "TURN relay unavailable"
@@ -3723,6 +3861,7 @@ var PeerSession = class {
   }
   async #detectPath() {
     const unknown = this.#forceRelay ? "turn" : "direct";
+    if (this.#channel instanceof TunnelChannel) return "turn";
     const reports = await this.#peer?.getStats().catch(() => void 0);
     if (!reports) return unknown;
     let selectedPairIds;
@@ -4194,6 +4333,7 @@ var say = (text) => {
   process.stderr.write(`${text}
 `);
 };
+var pathName = (link) => link.session.usesTunnel() ? "through the PairOnce tunnel" : link.path === "turn" ? "through the encrypted relay" : "direct";
 var human = (bytes) => bytes >= 1e9 ? `${(bytes / 1e9).toFixed(2)} GB` : bytes >= 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.ceil(bytes / 1e3)} kB`;
 async function sendPath(link, file, report = say) {
   const info = await stat3(file);
@@ -4222,7 +4362,7 @@ async function sendPath(link, file, report = say) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.3.0";
+var CLI_VERSION = "0.4.0-rc.1";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}
@@ -4308,7 +4448,7 @@ async function receiveFiles(args, device) {
         lastActivity = Date.now();
       }
     });
-    notify(`Connected to ${link.peer.name}. Waiting for files there (choose files to send) until ${new Date(deadline).toLocaleTimeString()}.`);
+    notify(`Connected to ${link.peer.name} (${pathName(link)}). Waiting for files there (choose files to send) until ${new Date(deadline).toLocaleTimeString()}.`);
     let closed = false;
     link.events.closed = () => {
       closed = true;
@@ -4477,7 +4617,7 @@ async function open(identity, name, folder) {
   if (target2.kind === "saved") say(`Connecting to ${target2.device.name}\u2026 Open https://paironce.com there: it shows "${identity.name} wants to reconnect"; tap Connect.`);
   const diskReceive = folder ? createDiskReceiver(folder) : void 0;
   const link = await connect(identity, target2, terminalUi, { diskReceive, signal: AbortSignal.timeout(target2.kind === "saved" ? 18e4 : 6e5) });
-  say(`Connected to ${link.peer.name} (${link.path === "turn" ? "through the encrypted relay" : "direct"}).`);
+  say(`Connected to ${link.peer.name} (${pathName(link)}).`);
   return link;
 }
 async function receive(link, folder, acceptAll) {
@@ -4511,7 +4651,15 @@ var HELP = `paironce ${CLI_VERSION}: send files and text from this terminal to y
 
 Files are end-to-end encrypted and go directly between the devices, or through an encrypted relay when a network
 blocks direct connections. The other device accepts every file before it arrives. This device is kept in ~/.paironce.`;
+function relaunchedForProxy() {
+  const proxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
+  if (!proxy || process.env.NODE_USE_ENV_PROXY) return void 0;
+  const child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], { stdio: "inherit", env: { ...process.env, NODE_USE_ENV_PROXY: "1" } });
+  return new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 1)));
+}
 async function main(argv) {
+  const relaunched = relaunchedForProxy();
+  if (relaunched) return relaunched;
   const { flags, rest } = parse(argv);
   const [command, ...args] = rest;
   if (flags.version) {

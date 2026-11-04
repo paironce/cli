@@ -6,6 +6,9 @@ import type { Link } from "./connection";
 
 export const say = (text: string) => { process.stderr.write(`${text}
 `); };
+/** How the connection runs, in words. */
+export const pathName = (link: Link) => link.session.usesTunnel() ? "through the PairOnce tunnel"
+  : link.path === "turn" ? "through the encrypted relay" : "direct";
 export const human = (bytes: number) => bytes >= 1e9 ? `${(bytes / 1e9).toFixed(2)} GB` : bytes >= 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.ceil(bytes / 1e3)} kB`;
 
 /** Send one file and wait until the other device has it. The other side accepts it first. */

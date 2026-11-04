@@ -17,7 +17,7 @@ import { connect, type Link } from "./connection";
 import { createDiskReceiver } from "./disk";
 import { receiveInto } from "./receive";
 import { listDevices, loadOrCreateIdentity, pickDevice } from "./store";
-import { sendPath } from "./send";
+import { pathName, sendPath } from "./send";
 import { CLI_VERSION } from "./version";
 
 const log = (text: string) => process.stderr.write(`${text}\n`);
@@ -70,7 +70,7 @@ async function receiveFiles(args: Record<string, unknown>, device: string | unde
       failed: (name, message) => { pending = Math.max(0, pending - 1); failures.push(`${name}: ${message}`); lastActivity = Date.now(); },
       text: text => { texts.push(text); lastActivity = Date.now(); },
     });
-    notify(`Connected to ${link.peer.name}. Waiting for files there (choose files to send) until ${new Date(deadline).toLocaleTimeString()}.`);
+    notify(`Connected to ${link.peer.name} (${pathName(link)}). Waiting for files there (choose files to send) until ${new Date(deadline).toLocaleTimeString()}.`);
     let closed = false;
     link.events.closed = () => { closed = true; };
     while (Date.now() < deadline && !closed) {

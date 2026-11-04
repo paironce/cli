@@ -11,6 +11,7 @@
  * --name "<name>" (or PAIRONCE_NAME) sets what the other device shows for this one, e.g. "Claude Code · Agent".
  */
 import "./env";
+import { spawn } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import path from "node:path";
 import { connect, type ConnectUi, type Link, type Target } from "./connection";
@@ -21,7 +22,7 @@ import { runMcp } from "./mcp";
 import { CLI_VERSION } from "./version";
 import type { DeviceIdentity } from "../../../apps/app/src/identity";
 
-import { human, say, sendPath } from "./send";
+import { human, pathName, say, sendPath } from "./send";
 
 function parse(argv: string[]) {
   const flags: Record<string, string | true> = {};
@@ -66,7 +67,7 @@ async function open(identity: DeviceIdentity, name: string | undefined, folder?:
   if (target.kind === "saved") say(`Connecting to ${target.device.name}… Open https://paironce.com there: it shows "${identity.name} wants to reconnect"; tap Connect.`);
   const diskReceive = folder ? createDiskReceiver(folder) : undefined;
   const link = await connect(identity, target, terminalUi, { diskReceive, signal: AbortSignal.timeout(target.kind === "saved" ? 180_000 : 600_000) });
-  say(`Connected to ${link.peer.name} (${link.path === "turn" ? "through the encrypted relay" : "direct"}).`);
+  say(`Connected to ${link.peer.name} (${pathName(link)}).`);
   return link;
 }
 
@@ -98,7 +99,21 @@ const HELP = `paironce ${CLI_VERSION}: send files and text from this terminal to
 Files are end-to-end encrypted and go directly between the devices, or through an encrypted relay when a network
 blocks direct connections. The other device accepts every file before it arrives. This device is kept in ~/.paironce.`;
 
+/**
+ * Behind a web proxy (HTTPS_PROXY), Node's fetch and WebSocket reach paironce.com only with NODE_USE_ENV_PROXY=1, read
+ * when Node starts: run again with it, passing the terminal and the exit code through. The tunnel (2.22.0) then carries
+ * the connection where WebRTC cannot get out.
+ */
+function relaunchedForProxy(): Promise<number> | undefined {
+  const proxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
+  if (!proxy || process.env.NODE_USE_ENV_PROXY) return undefined;
+  const child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], { stdio: "inherit", env: { ...process.env, NODE_USE_ENV_PROXY: "1" } });
+  return new Promise(resolve => child.on("exit", code => resolve(code ?? 1)));
+}
+
 async function main(argv: string[]): Promise<number> {
+  const relaunched = relaunchedForProxy();
+  if (relaunched) return relaunched;
   const { flags, rest } = parse(argv);
   const [command, ...args] = rest;
   if (flags.version) { process.stdout.write(`${CLI_VERSION}\n`); return 0; }
