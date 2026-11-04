@@ -9,9 +9,13 @@
  *   paironce mcp                  run as an MCP server, so an AI agent can send to and receive from your devices
  *
  * --name "<name>" (or PAIRONCE_NAME) sets what the other device shows for this one, e.g. "Claude Code · Agent".
+ * --agent (PAIRONCE_AGENT=1, always on for `mcp`) marks this device as an AI agent on the other device.
+ * --ephemeral: an identity in a temporary folder, which the other device forgets after a day without a connection.
  */
 import "./env";
 import { spawn } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import path from "node:path";
 import { connect, type ConnectUi, type Link, type Target } from "./connection";
@@ -46,6 +50,9 @@ async function ask(question: string): Promise<boolean> {
 }
 
 /** Grouped as the web app shows it (CodeCells.tsx codeGroups): 3+3 for a code, fours for a safety code. */
+/** How long an --ephemeral identity may be kept by the other device after it last connected: one day. */
+const EPHEMERAL_FORGET_AFTER = 86_400;
+
 const groups = (code: string) => (code.length > 6 ? code.match(/.{1,4}/g) ?? [code] : [code.slice(0, 3), code.slice(3)]).join(" ");
 
 /** The terminal's side of connecting: codes and the safety code on screen, approval asked here. */
@@ -95,6 +102,8 @@ const HELP = `paironce ${CLI_VERSION}: send files and text from this terminal to
   paironce mcp                   run as an MCP server for AI agents (pair_device, send_file, send_text, receive_files, list_devices)
 
   --name "<name>"                what the other device shows for this one (or PAIRONCE_NAME), e.g. "Claude Code · Agent"
+  --agent                        mark this device as an AI agent on the other device (always on for mcp)
+  --ephemeral                    a throwaway identity: the other device forgets it after a day without a connection
 
 Files are end-to-end encrypted and go directly between the devices, or through an encrypted relay when a network
 blocks direct connections. The other device accepts every file before it arrives. This device is kept in ~/.paironce.`;
@@ -120,6 +129,12 @@ async function main(argv: string[]): Promise<number> {
   if (flags.version) { process.stdout.write(`${CLI_VERSION}\n`); return 0; }
   if (!command || flags.help || command === "help") { process.stdout.write(`${HELP}\n`); return command || flags.help ? 0 : 1; }
   if (typeof flags.name === "string") process.env.PAIRONCE_NAME = flags.name;
+  if (flags.agent || command === "mcp") process.env.PAIRONCE_AGENT = "1";
+  if (flags.ephemeral) {
+    process.env.PAIRONCE_AGENT = "1";
+    process.env.PAIRONCE_FORGET_AFTER ??= String(EPHEMERAL_FORGET_AFTER);
+    process.env.PAIRONCE_HOME ??= mkdtempSync(path.join(tmpdir(), "paironce-"));
+  }
   if (command === "mcp") return runMcp();
   const identity = await loadOrCreateIdentity();
   if (command === "devices") {

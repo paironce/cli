@@ -152,6 +152,9 @@ export async function connect(identity: DeviceIdentity, target: Target, ui: Conn
         pairingExpiresAt: room.expiresAt,
         ...(target.kind === "saved" && room.role === "host" && room.code ? { pairingCode: room.code } : {}),
         isPro: () => false,
+        // Agent as a Device v2: an agent says so (the other device marks it) and may ask to be forgotten after a while away.
+        ...(process.env.PAIRONCE_AGENT === "1" ? { deviceKind: "agent" as const,
+          ...(Number(process.env.PAIRONCE_FORGET_AFTER) > 0 ? { forgetAfter: Number(process.env.PAIRONCE_FORGET_AFTER) } : {}) } : {}),
         // PAIRONCE_FORCE_RELAY=1 skips the direct attempt: for checking the relay path on a given network.
         forceRelay: process.env.PAIRONCE_FORCE_RELAY === "1",
         ...(room.expected ? { expectedPeerIdentity: room.expected } : {}),

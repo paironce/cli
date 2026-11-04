@@ -28,7 +28,9 @@ install there.
 | `paironce mcp` | Runs as an MCP server for AI agents. |
 
 `--name "<name>"` (or the `PAIRONCE_NAME` variable) sets what the other device shows for this one, for example
-`--name "Build server"`. The key stays the same, so paired devices still know it.
+`--name "Build server"`. The key stays the same, so paired devices still know it. `--agent` marks this device as an AI
+agent on the other device (the MCP server always does). `--ephemeral` uses a throwaway identity in a temporary folder,
+which the other device forgets after a day without a connection: right for a sandbox that is thrown away.
 
 When a paired device is not connected, the command asks it to connect: PairOnce on that device shows
 **"Windows · Terminal wants to reconnect"** with a **Connect** button.
@@ -44,12 +46,15 @@ When a paired device is not connected, the command asks it to connect: PairOnce 
 | `receive_files` | Waits while you send files from your device (a photo of a whiteboard, a scan, a document) and saves them into `./inbox`. |
 | `list_devices` | Lists the paired devices. |
 
-The agent reaches only devices you paired and approved, and nothing arrives anywhere unasked.
+The agent reaches only devices you paired and approved, and nothing arrives anywhere unasked. Your device marks it
+**Agent** when it asks to be approved and in your saved devices. Design and plans:
+[Agent as a Device](https://github.com/paironce/protocol/blob/main/agent-as-a-device.md).
 
 Claude Code:
 
 ```sh
 claude mcp add paironce -e PAIRONCE_NAME="Claude Code · Agent" -- npx -y paironce mcp
+# in a throwaway sandbox: ... -- npx -y paironce mcp --ephemeral
 ```
 
 Other clients (Cursor, Claude Desktop and others), in their MCP configuration:

@@ -22,6 +22,8 @@ Object.assign(globalThis, { RTCPeerConnection: RTCPeerConnection3, RTCSessionDes
 
 // src/cli.ts
 import { spawn } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { createInterface as createInterface2 } from "node:readline/promises";
 import path6 from "node:path";
 
@@ -220,7 +222,11 @@ var helloSchema = z.object({
   // This side can fall back to the WebSocket tunnel (2.22.0, protocol 2.2) when neither a direct path nor the TURN relay
   // connects. Optional like the flags above: a peer that predates it drops the key, and the tunnel is used only when both
   // hellos carry it.
-  tunnel: z.literal(1).optional()
+  tunnel: z.literal(1).optional(),
+  // Agent as a Device v2 (protocol 2.3): this side is an AI agent, and how long the other device may keep it after it last
+  // connected (an hour to 30 days). Both only ever limit or mark the pairing; a peer that predates them drops the keys.
+  deviceKind: z.literal("agent").optional(),
+  forgetAfter: z.number().int().min(3600).max(30 * 86400).optional()
 });
 var signalMessageSchema = z.discriminatedUnion("type", [
   helloSchema,
@@ -1172,6 +1178,8 @@ var PeerSession = class {
   #peerLiveMedia = false;
   /** The other side offered the tunnel in its hello; this connection tried it already. */
   #peerTunnel = false;
+  /** The other side said it is an AI agent, and for how long it may be kept (Agent as a Device v2). */
+  #peerAgent;
   #tunnelTried = false;
   /** The peer's DTLS fingerprint, reported over the encrypted channel, matched the description signaling delivered. */
   #liveVerified = false;
@@ -1685,6 +1693,10 @@ var PeerSession = class {
       this.#releaseRelay(relayClaim);
       throw error;
     }
+  }
+  /** The other side said it is an AI agent (Agent as a Device v2), and how long it asked to be kept; undefined otherwise. */
+  peerAgent() {
+    return this.#peerAgent ? { ...this.#peerAgent } : void 0;
   }
   /** True when this connection runs through the WebSocket tunnel (2.22.0) rather than a data channel. */
   usesTunnel() {
@@ -2291,6 +2303,7 @@ var PeerSession = class {
         this.#peerReceiveWindow = message.receiveWindow === 1;
         this.#peerLiveMedia = message.liveMedia === 1;
         this.#peerTunnel = message.tunnel === 1;
+        this.#peerAgent = message.deviceKind === "agent" ? { ...message.forgetAfter ? { forgetAfter: message.forgetAfter } : {} } : void 0;
         if (this.#options.deviceKeyAgreement && message.role !== this.#role) {
           const descriptor = { id: message.deviceId, name: message.deviceName, publicKey: message.devicePublicKey };
           if (!isDeviceDescriptor(descriptor)) throw new Error("The other device did not provide a valid identity");
@@ -2743,6 +2756,10 @@ var PeerSession = class {
       receiveWindow: 1,
       ...this.#options.liveMedia ? { liveMedia: 1 } : {},
       ...this.#tunnelOffered() ? { tunnel: 1 } : {},
+      ...this.#options.deviceKind === "agent" ? {
+        deviceKind: "agent",
+        ...this.#options.forgetAfter ? { forgetAfter: Math.round(Math.min(30 * 86400, Math.max(3600, this.#options.forgetAfter))) } : {}
+      } : {},
       sessionNonce: toBase64Url(this.#channelNonce),
       ...this.#localCapabilities().length > 0 ? { capabilities: this.#localCapabilities() } : {},
       ...this.#options.deviceKeyAgreement ? { safetyCode: 2 } : {},
@@ -4190,6 +4207,11 @@ async function connect(identity, target2, ui, options = {}) {
         pairingExpiresAt: room.expiresAt,
         ...target2.kind === "saved" && room.role === "host" && room.code ? { pairingCode: room.code } : {},
         isPro: () => false,
+        // Agent as a Device v2: an agent says so (the other device marks it) and may ask to be forgotten after a while away.
+        ...process.env.PAIRONCE_AGENT === "1" ? {
+          deviceKind: "agent",
+          ...Number(process.env.PAIRONCE_FORGET_AFTER) > 0 ? { forgetAfter: Number(process.env.PAIRONCE_FORGET_AFTER) } : {}
+        } : {},
         // PAIRONCE_FORCE_RELAY=1 skips the direct attempt: for checking the relay path on a given network.
         forceRelay: process.env.PAIRONCE_FORCE_RELAY === "1",
         ...room.expected ? { expectedPeerIdentity: room.expected } : {},
@@ -4362,7 +4384,7 @@ async function sendPath(link, file, report = say) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.4.0";
+var CLI_VERSION = "0.5.0";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}
@@ -4594,6 +4616,7 @@ async function ask(question) {
     line.close();
   }
 }
+var EPHEMERAL_FORGET_AFTER = 86400;
 var groups = (code) => (code.length > 6 ? code.match(/.{1,4}/g) ?? [code] : [code.slice(0, 3), code.slice(3)]).join(" ");
 var terminalUi = {
   // PAIRONCE_DEBUG=1 shows each step of connecting (direct attempt, relay retry), for network problems.
@@ -4648,6 +4671,8 @@ var HELP = `paironce ${CLI_VERSION}: send files and text from this terminal to y
   paironce mcp                   run as an MCP server for AI agents (pair_device, send_file, send_text, receive_files, list_devices)
 
   --name "<name>"                what the other device shows for this one (or PAIRONCE_NAME), e.g. "Claude Code \xB7 Agent"
+  --agent                        mark this device as an AI agent on the other device (always on for mcp)
+  --ephemeral                    a throwaway identity: the other device forgets it after a day without a connection
 
 Files are end-to-end encrypted and go directly between the devices, or through an encrypted relay when a network
 blocks direct connections. The other device accepts every file before it arrives. This device is kept in ~/.paironce.`;
@@ -4673,6 +4698,12 @@ async function main(argv) {
     return command || flags.help ? 0 : 1;
   }
   if (typeof flags.name === "string") process.env.PAIRONCE_NAME = flags.name;
+  if (flags.agent || command === "mcp") process.env.PAIRONCE_AGENT = "1";
+  if (flags.ephemeral) {
+    process.env.PAIRONCE_AGENT = "1";
+    process.env.PAIRONCE_FORGET_AFTER ??= String(EPHEMERAL_FORGET_AFTER);
+    process.env.PAIRONCE_HOME ??= mkdtempSync(path6.join(tmpdir(), "paironce-"));
+  }
   if (command === "mcp") return runMcp();
   const identity = await loadOrCreateIdentity();
   if (command === "devices") {
