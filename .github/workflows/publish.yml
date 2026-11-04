@@ -21,5 +21,7 @@ jobs:
       - run: npm install -g npm@11.6.2
       - name: The release tag names the package version
         run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+      # The published file runs with the dependencies a user gets (node-datachannel, zod).
+      - run: npm install --no-save --no-package-lock --ignore-scripts
       - run: node dist/paironce.mjs --version
       - run: npm publish --access public
