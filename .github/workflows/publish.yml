@@ -24,4 +24,5 @@ jobs:
       # The published file runs with the dependencies a user gets (node-datachannel, zod).
       - run: npm install --no-save --no-package-lock --ignore-scripts
       - run: node dist/paironce.mjs --version
-      - run: npm publish --access public
+      # A pre-release (0.2.0-rc.1) goes to the next tag, so npx paironce keeps installing the latest release.
+      - run: npm publish --access public --tag $([[ "$GITHUB_REF_NAME" == *-* ]] && echo next || echo latest)
