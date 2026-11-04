@@ -4170,7 +4170,7 @@ async function sendPath(link, file, report = say) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.2.0-rc.1";
+var CLI_VERSION = "0.2.0-rc.2";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}
@@ -4310,6 +4310,10 @@ async function ask(question) {
 }
 var groups = (code) => (code.length > 6 ? code.match(/.{1,4}/g) ?? [code] : [code.slice(0, 3), code.slice(3)]).join(" ");
 var terminalUi = {
+  // PAIRONCE_DEBUG=1 shows each step of connecting (direct attempt, relay retry), for network problems.
+  status: (text) => {
+    if (process.env.PAIRONCE_DEBUG) say(`  ${text}`);
+  },
   code: (code) => say(`
 On your other device, open https://paironce.com, choose "Enter a code" and type:
 

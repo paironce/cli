@@ -47,6 +47,8 @@ const groups = (code: string) => (code.length > 6 ? code.match(/.{1,4}/g) ?? [co
 
 /** The terminal's side of connecting: codes and the safety code on screen, approval asked here. */
 export const terminalUi: ConnectUi = {
+  // PAIRONCE_DEBUG=1 shows each step of connecting (direct attempt, relay retry), for network problems.
+  status: text => { if (process.env.PAIRONCE_DEBUG) say(`  ${text}`); },
   code: code => say(`\nOn your other device, open https://paironce.com, choose "Enter a code" and type:\n\n    ${code.slice(0, 3)} ${code.slice(3)}\n`),
   safetyCode: code => say(`Safety code: ${groups(code)}  (the other screen must show the same)`),
   approve: peer => ask(`Connect "${peer.name}"? Check that both screens show the same safety code.`),
