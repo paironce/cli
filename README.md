@@ -37,7 +37,7 @@ When a paired device is not connected, the command asks it to connect: PairOnce 
 
 ## Use it from an AI agent (MCP)
 
-`paironce mcp` gives an agent eight tools:
+`paironce mcp` gives an agent ten tools:
 
 | Tool | What it does |
 | --- | --- |
@@ -45,6 +45,7 @@ When a paired device is not connected, the command asks it to connect: PairOnce 
 | `send_file`, `send_text` | Sends to a paired device; you accept every file there. |
 | `receive_files` | Waits while you send files from your device (a photo of a whiteboard, a scan, a document) and saves them into `./inbox`. |
 | `request_photo`, `request_scan`, `request_file` | Asks for something specific, with the reason. Your device shows the request; you take the photo, scan the pages or choose the file there, or decline. Saved into `./inbox`. |
+| `watch_frames`, `watch_stop` | Asks to see your camera or screen, with the reason. You share it on your device, or decline; the agent then gets a still picture each time it asks (at most two a second) and can guide you step by step. Your device shows the share and a stop button; it ends when either side stops it. |
 | `list_devices` | Lists the paired devices. |
 
 The agent reaches only devices you paired and approved, and nothing arrives anywhere unasked. Your device marks it

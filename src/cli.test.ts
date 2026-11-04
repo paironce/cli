@@ -54,13 +54,13 @@ describe("the terminal's device", () => {
 });
 
 describe("the MCP server", () => {
-  it("introduces itself, lists its eight tools and ignores notifications", async () => {
+  it("introduces itself, lists its ten tools and ignores notifications", async () => {
     const init = await answer({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } }) as { result: { serverInfo: { name: string }; capabilities: object } };
     expect(init.result.serverInfo.name).toBe("paironce");
     expect(init.result.capabilities).toEqual({ tools: {}, logging: {} });
     expect(await answer({ jsonrpc: "2.0", method: "notifications/initialized" })).toBeUndefined();
     const list = await answer({ jsonrpc: "2.0", id: 2, method: "tools/list" }) as { result: { tools: typeof TOOLS } };
-    expect(list.result.tools.map(tool => tool.name)).toEqual(["pair_device", "list_devices", "send_file", "send_text", "receive_files", "request_photo", "request_scan", "request_file"]);
+    expect(list.result.tools.map(tool => tool.name)).toEqual(["pair_device", "list_devices", "send_file", "send_text", "receive_files", "request_photo", "request_scan", "request_file", "watch_frames", "watch_stop"]);
     const unknown = await answer({ jsonrpc: "2.0", id: 3, method: "resources/list" }) as { error: { code: number } };
     expect(unknown.error.code).toBe(-32601);
   });
@@ -73,5 +73,14 @@ describe("the MCP server", () => {
     const bad = await answer({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "pair_device", arguments: { code: "12ab" } } }) as { result: { isError: boolean; content: { text: string }[] } };
     expect(bad.result.isError).toBe(true);
     expect(bad.result.content[0]!.text).toContain("six digits");
+  });
+
+  it("asks for a reason before it watches, and stops nothing when nothing is watched", async () => {
+    process.env.PAIRONCE_HOME = mkdtempSync(path.join(tmpdir(), "paironce-test-"));
+    const silent = await answer({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "watch_frames", arguments: {} } }) as { result: { isError: boolean; content: { text: string }[] } };
+    expect(silent.result.isError).toBe(true);
+    expect(silent.result.content[0]!.text).toContain("purpose is required");
+    const stop = await answer({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "watch_stop", arguments: {} } }) as { result: { content: { text: string }[] } };
+    expect(stop.result.content[0]!.text).toBe("Not watching.");
   });
 });

@@ -31,8 +31,12 @@ export interface LinkEvents {
   receipt?(receipt: FileReceipt): void;
   progress?(name: string, fraction: number, direction?: "sent" | "received"): void;
   text?(text: string): void;
-  /** The other device answered a request for a file, a photo or a scan (Agent as a Device v3). */
-  requestAnswer?(answer: { id: string; decision: "decline" | "send"; count?: number }): void;
+  /** The other device answered a request for a file, a photo or a scan (Agent as a Device v3), or to watch (v4). */
+  requestAnswer?(answer: { id: string; decision: "decline" | "send" | "watch"; count?: number }): void;
+  /** Watching (v4): this transfer is the still asked for. */
+  watchStillFile?(id: string, transferId: string): void;
+  /** Watching (v4): the person stopped sharing, or the watch reached its time. */
+  watchEnded?(id: string): void;
   error?(message: string): void;
   closed?(): void;
 }
@@ -134,6 +138,8 @@ export async function connect(identity: DeviceIdentity, target: Target, ui: Conn
       },
       onText: text => events.text?.(text),
       onRequestAnswer: answer => events.requestAnswer?.(answer),
+      onWatchStillFile: (id, transferId) => events.watchStillFile?.(id, transferId),
+      onWatchEnded: id => events.watchEnded?.(id),
       onFile: file => events.file?.(file),
       onFileOffer: offer => events.offer?.(offer),
       onFileReceipt: receipt => events.receipt?.(receipt),

@@ -229,7 +229,10 @@ var helloSchema = z.object({
   forgetAfter: z.number().int().min(3600).max(30 * 86400).optional(),
   // Agent as a Device v3 (protocol 2.4): this side shows requests for a file, a photo or a scan and answers them. An
   // agent asks only a peer that sent it; a peer that predates it drops the key and is never asked.
-  requests: z.literal(1).optional()
+  requests: z.literal(1).optional(),
+  // Agent as a Device v4 (protocol 2.5): this side also takes a request to watch (kind "watch") and, once the person
+  // shares their camera or screen for it, sends a still each time the asker asks. Optional like the flags above.
+  watch: z.literal(1).optional()
 });
 var signalMessageSchema = z.discriminatedUnion("type", [
   helloSchema,
@@ -330,11 +333,14 @@ function parseSignalMessage(input) {
 function parseDataFrame(input) {
   return dataFrameSchema.parse(input);
 }
-var REQUEST_KINDS = ["file", "photo", "scan"];
+var REQUEST_KINDS = ["file", "photo", "scan", "watch"];
 var requestPayloadSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("ask"), id: idSchema, kind: z.enum(REQUEST_KINDS), purpose: z.string().min(1).max(300) }).strict(),
-  z.object({ op: z.literal("answer"), id: idSchema, decision: z.enum(["decline", "send"]), count: z.number().int().min(1).max(20).optional() }).strict(),
-  z.object({ op: z.literal("withdraw"), id: idSchema }).strict()
+  z.object({ op: z.literal("answer"), id: idSchema, decision: z.enum(["decline", "send", "watch"]), count: z.number().int().min(1).max(20).optional() }).strict(),
+  z.object({ op: z.literal("withdraw"), id: idSchema }).strict(),
+  z.object({ op: z.literal("still"), id: idSchema }).strict(),
+  z.object({ op: z.literal("still-file"), id: idSchema, transferId: idSchema }).strict(),
+  z.object({ op: z.literal("stop"), id: idSchema }).strict()
 ]);
 function parseRequestPayload(raw) {
   return requestPayloadSchema.parse(JSON.parse(raw));
@@ -1101,6 +1107,8 @@ function abortable(operation, signal) {
 var REQUESTS_OPEN = 3;
 var REQUESTS_PER_WINDOW = 10;
 var REQUEST_WINDOW_MS = 10 * 6e4;
+var WATCH_STILL_GAP_MS = 500;
+var WATCH_MAX_MS = 15 * 6e4;
 var SIGNAL_PING_MS = 25e3;
 var SIGNAL_PING2 = '{"type":"ping"}';
 var SIGNAL_PONG2 = '{"type":"pong"}';
@@ -1200,7 +1208,11 @@ var PeerSession = class {
   /** The other side shows requests (Agent as a Device v3); requests this side was asked recently, and those still open. */
   #peerRequests = false;
   #requestTimes = [];
-  #openRequests = /* @__PURE__ */ new Set();
+  #openRequests = /* @__PURE__ */ new Map();
+  /** The other side takes a request to watch (v4). This side shares for a watch, or watches the other side. */
+  #peerWatch = false;
+  #watching;
+  #watchAsked;
   #tunnelTried = false;
   /** The peer's DTLS fingerprint, reported over the encrypted channel, matched the description signaling delivered. */
   #liveVerified = false;
@@ -1272,6 +1284,8 @@ var PeerSession = class {
     this.#liveVerified = false;
     this.#pendingLiveFingerprint = void 0;
     this.#live = void 0;
+    this.#watching = void 0;
+    this.#watchAsked = void 0;
     this.#openSignaling(false);
   }
   #openSignaling(recovering) {
@@ -1719,24 +1733,59 @@ var PeerSession = class {
   peerTakesRequests() {
     return this.#peerRequests && this.#paired;
   }
-  /** Ask the other device for a file, a photo or a scan; answers arrive through onRequestAnswer. Returns the request's ID. */
+  /** The other side takes a request to watch its camera or screen (v4). */
+  peerTakesWatch() {
+    return this.#peerRequests && this.#peerWatch && this.#paired;
+  }
+  /**
+   * Ask the other device for a file, a photo, a scan or to watch; answers arrive through onRequestAnswer. Returns the
+   * request's ID. A watch answered "watch" then gives a still for each askStill, until either side stops it.
+   */
   async askFor(kind, purpose) {
     this.#requirePairing();
     if (!this.#peerRequests) throw new Error("The other device does not take requests. Update PairOnce there.");
+    if (kind === "watch" && !this.#peerWatch) throw new Error("The other device does not take a request to watch. Update PairOnce there.");
     const id = randomId();
+    if (kind === "watch") this.#watchAsked = id;
     await this.#sendRequest({ op: "ask", id, kind, purpose: purpose.trim().slice(0, 300) || kind });
     return id;
+  }
+  /** The watcher: ask for a still now. It arrives as a file announced through onWatchStillFile. */
+  async askStill(id) {
+    this.#requirePairing();
+    if (this.#watchAsked !== id) throw new Error("Not watching");
+    await this.#sendRequest({ op: "still", id });
+  }
+  /** The sharing side: the still asked for goes out as this transfer (send it with sendFile and this ID). */
+  async announceWatchStill(id, transferId) {
+    this.#requirePairing();
+    if (this.#watching?.id !== id) throw new Error("Not sharing for this watch");
+    await this.#sendRequest({ op: "still-file", id, transferId });
+  }
+  /** Either side: end the watch. */
+  async stopWatch(id) {
+    const mine = this.#watching?.id === id || this.#watchAsked === id;
+    if (this.#watching?.id === id) this.#watching = void 0;
+    if (this.#watchAsked === id) this.#watchAsked = void 0;
+    if (mine && this.#paired) await this.#sendRequest({ op: "stop", id }).catch(() => {
+    });
   }
   /** The asker no longer waits for this request. */
   async withdrawRequest(id) {
     if (this.#paired) await this.#sendRequest({ op: "withdraw", id }).catch(() => {
     });
   }
-  /** Answer a request this side was shown: declined, or the number of files about to be offered for it. */
+  /**
+   * Answer a request this side was shown: declined, the number of files about to be offered for it, or (a request to
+   * watch) that the person now shares their camera or screen for it.
+   */
   async answerRequest(id, answer2) {
     this.#requirePairing();
-    if (!this.#openRequests.delete(id)) return;
-    await this.#sendRequest(answer2.decision === "send" ? { op: "answer", id, decision: "send", count: Math.min(20, Math.max(1, Math.round(answer2.count))) } : { op: "answer", id, decision: "decline" });
+    const kind = this.#openRequests.get(id);
+    if (!kind || answer2.decision !== "decline" && answer2.decision === "watch" !== (kind === "watch")) return;
+    this.#openRequests.delete(id);
+    if (answer2.decision === "watch") this.#watching = { id, startedAt: Date.now(), lastStillAt: 0 };
+    await this.#sendRequest(answer2.decision === "send" ? { op: "answer", id, decision: "send", count: Math.min(20, Math.max(1, Math.round(answer2.count))) } : { op: "answer", id, decision: answer2.decision });
   }
   async #sendRequest(payload) {
     const plaintext = new TextEncoder().encode(JSON.stringify(payload));
@@ -1795,13 +1844,52 @@ var PeerSession = class {
       return;
     }
     const now = Date.now();
+    if (payload.op === "still") {
+      const watching = this.#watching;
+      if (watching?.id !== payload.id) return;
+      if (now - watching.startedAt > WATCH_MAX_MS) {
+        await this.stopWatch(payload.id);
+        try {
+          this.#callbacks.onWatchEnded?.(payload.id);
+        } catch {
+        }
+        return;
+      }
+      if (now - watching.lastStillAt < WATCH_STILL_GAP_MS) return;
+      watching.lastStillAt = now;
+      try {
+        this.#callbacks.onWatchStill?.(payload.id);
+      } catch {
+      }
+      return;
+    }
+    if (payload.op === "still-file") {
+      if (this.#watchAsked === payload.id) {
+        try {
+          this.#callbacks.onWatchStillFile?.(payload.id, payload.transferId);
+        } catch {
+        }
+      }
+      return;
+    }
+    if (payload.op === "stop") {
+      if (this.#watching?.id !== payload.id && this.#watchAsked !== payload.id) return;
+      if (this.#watching?.id === payload.id) this.#watching = void 0;
+      if (this.#watchAsked === payload.id) this.#watchAsked = void 0;
+      try {
+        this.#callbacks.onWatchEnded?.(payload.id);
+      } catch {
+      }
+      return;
+    }
     while (this.#requestTimes.length && now - this.#requestTimes[0] > REQUEST_WINDOW_MS) this.#requestTimes.shift();
-    if (!this.#options.requests || this.#openRequests.size >= REQUESTS_OPEN || this.#requestTimes.length >= REQUESTS_PER_WINDOW) {
+    const watchBusy = payload.kind === "watch" && (!this.#options.watch || this.#watching !== void 0 || [...this.#openRequests.values()].includes("watch"));
+    if (!this.#options.requests || this.#openRequests.size >= REQUESTS_OPEN || this.#requestTimes.length >= REQUESTS_PER_WINDOW || watchBusy) {
       await this.#sendRequest({ op: "answer", id: payload.id, decision: "decline" });
       return;
     }
     this.#requestTimes.push(now);
-    this.#openRequests.add(payload.id);
+    this.#openRequests.set(payload.id, payload.kind);
     try {
       this.#callbacks.onRequest?.({ id: payload.id, kind: payload.kind, purpose: payload.purpose });
     } catch {
@@ -2418,6 +2506,7 @@ var PeerSession = class {
         this.#peerTunnel = message.tunnel === 1;
         this.#peerAgent = message.deviceKind === "agent" ? { ...message.forgetAfter ? { forgetAfter: message.forgetAfter } : {} } : void 0;
         this.#peerRequests = message.requests === 1;
+        this.#peerWatch = message.watch === 1;
         if (this.#options.deviceKeyAgreement && message.role !== this.#role) {
           const descriptor = { id: message.deviceId, name: message.deviceName, publicKey: message.devicePublicKey };
           if (!isDeviceDescriptor(descriptor)) throw new Error("The other device did not provide a valid identity");
@@ -2870,7 +2959,7 @@ var PeerSession = class {
       receiveWindow: 1,
       ...this.#options.liveMedia ? { liveMedia: 1 } : {},
       ...this.#tunnelOffered() ? { tunnel: 1 } : {},
-      ...this.#options.requests ? { requests: 1 } : {},
+      ...this.#options.requests ? { requests: 1, ...this.#options.watch ? { watch: 1 } : {} } : {},
       ...this.#options.deviceKind === "agent" ? {
         deviceKind: "agent",
         ...this.#options.forgetAfter ? { forgetAfter: Math.round(Math.min(30 * 86400, Math.max(3600, this.#options.forgetAfter))) } : {}
@@ -4306,6 +4395,8 @@ async function connect(identity, target2, ui, options = {}) {
       },
       onText: (text) => events.text?.(text),
       onRequestAnswer: (answer2) => events.requestAnswer?.(answer2),
+      onWatchStillFile: (id, transferId) => events.watchStillFile?.(id, transferId),
+      onWatchEnded: (id) => events.watchEnded?.(id),
       onFile: (file) => events.file?.(file),
       onFileOffer: (offer) => events.offer?.(offer),
       onFileReceipt: (receipt) => events.receipt?.(receipt),
@@ -4465,6 +4556,7 @@ async function receiveInto(link, folder, handlers) {
 
 // src/mcp.ts
 import { createInterface } from "node:readline";
+import { readFile as readFile2 } from "node:fs/promises";
 import path5 from "node:path";
 
 // src/send.ts
@@ -4504,7 +4596,7 @@ async function sendPath(link, file, report = say) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.6.0";
+var CLI_VERSION = "0.7.0";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}
@@ -4516,6 +4608,7 @@ var notify = (text) => {
 };
 var target = { type: "string", description: "Name of a paired device (from list_devices). Optional when only one is paired." };
 var RECEIVE_WAIT = { default: 120, max: 600, quietAfterFile: 15 };
+var WATCH = { count: 5, interval: { default: 1, min: 0.5, max: 10 }, stillMs: 2e4, idle: 5 * 6e4 };
 var TOOLS = [
   {
     name: "pair_device",
@@ -4559,8 +4652,141 @@ var TOOLS = [
       },
       required: ["purpose"]
     }
-  }))
+  })),
+  {
+    name: "watch_frames",
+    description: 'See what the user sees: ask to watch their camera or screen on one of their paired devices, then get still pictures of it, returned as images you can look at (and saved, default ./inbox/watch). The first call asks; their device shows your reason and they share the camera or the screen there, or decline. Later calls return new stills from the same share, so you can guide them step by step ("now turn the switch on the left"). It ends when they stop, when you call watch_stop, or after 5 minutes without a call; their device ends it after 15 minutes.',
+    inputSchema: { type: "object", properties: {
+      purpose: { type: "string", description: "Needed when not watching yet: what you want to see and why, in one or two sentences the user reads on their device (at most 300 characters)." },
+      count: { type: "number", description: `Stills to take now, 1 to ${WATCH.count}. Default 1.` },
+      interval_seconds: { type: "number", description: `Seconds between those stills, ${WATCH.interval.min} to ${WATCH.interval.max}. Default ${WATCH.interval.default}.` },
+      device: target,
+      folder: { type: "string", description: "Where to save the stills, relative to the server's folder. Default: inbox/watch." },
+      wait_seconds: { type: "number", description: `When asking: how long to wait for the user to share, ${RECEIVE_WAIT.default} by default, at most ${RECEIVE_WAIT.max}.` }
+    } }
+  },
+  { name: "watch_stop", description: "Stop watching the user's camera or screen (see watch_frames). Their device stops sharing.", inputSchema: { type: "object", properties: {} } }
 ];
+var watch;
+var lastWatchEnd;
+function endWatch(reason) {
+  const current = watch;
+  if (!current) return;
+  watch = void 0;
+  lastWatchEnd = reason;
+  clearTimeout(current.idle);
+  current.next?.(new Error(reason));
+  void current.link.session.stopWatch(current.id).finally(() => current.link.close());
+}
+async function startWatch(args, device) {
+  const purpose = typeof args.purpose === "string" ? args.purpose.trim() : "";
+  if (!purpose) throw new Error(`${lastWatchEnd ? `Not watching: ${lastWatchEnd} ` : ""}purpose is required to start watching: say what you want to see and why, in a sentence the user reads on their device.`);
+  lastWatchEnd = void 0;
+  const seconds = Math.min(RECEIVE_WAIT.max, Math.max(10, typeof args.wait_seconds === "number" ? args.wait_seconds : RECEIVE_WAIT.default));
+  const folder = path5.resolve(typeof args.folder === "string" && args.folder ? args.folder : path5.join("inbox", "watch"));
+  const link = await openSaved(device, seconds, folder);
+  let answer2;
+  let closed = false;
+  const stills = /* @__PURE__ */ new Set();
+  const current = { link, id: "", folder };
+  try {
+    if (!link.session.peerTakesWatch()) throw new Error(`${link.peer.name} cannot share its camera or screen with an agent yet: PairOnce there needs version 2.25 or later. Use request_photo instead.`);
+    link.events.requestAnswer = (reply) => {
+      if (reply.id === current.id) answer2 = reply.decision === "watch" ? "watch" : "decline";
+    };
+    link.events.watchStillFile = (id, transferId) => {
+      if (id === current.id) stills.add(transferId);
+    };
+    link.events.watchEnded = (id) => {
+      if (id === current.id && watch === current) {
+        current.ended = `${link.peer.name} stopped sharing.`;
+        endWatch(current.ended);
+      }
+    };
+    link.events.closed = () => {
+      closed = true;
+      if (watch === current) {
+        current.ended = "The connection ended.";
+        endWatch(current.ended);
+      }
+    };
+    await receiveInto(link, folder, {
+      // Only the stills this watch asked for.
+      accept: async (offer) => stills.delete(offer.transferId),
+      saved: (file) => {
+        const next = current.next;
+        current.next = void 0;
+        next?.(file);
+      },
+      failed: (_name, message) => {
+        const next = current.next;
+        current.next = void 0;
+        next?.(new Error(message));
+      }
+    });
+    current.id = await link.session.askFor("watch", purpose);
+    notify(`Asked ${link.peer.name} to see the camera or the screen: "${purpose}". Waiting for the user there.`);
+    const deadline = Date.now() + seconds * 1e3;
+    while (Date.now() < deadline && !closed && !answer2) await new Promise((resolve) => setTimeout(resolve, 300));
+    if (answer2 === "watch") {
+      watch = current;
+      return void 0;
+    }
+    if (!answer2 && !closed) await link.session.withdrawRequest(current.id);
+  } catch (error) {
+    link.close();
+    throw error;
+  }
+  link.close();
+  return answer2 === "decline" ? `${link.peer.name} declined.` : closed ? "The connection ended before the user answered." : `No answer from ${link.peer.name} within ${seconds} seconds; the request was withdrawn.`;
+}
+async function takeWatchStill(current) {
+  const arrived = new Promise((resolve) => {
+    current.next = resolve;
+  });
+  await current.link.session.askStill(current.id);
+  const file = await Promise.race([arrived, new Promise((resolve) => setTimeout(() => resolve(new Error("No still arrived in time. The user's screen may be locked or PairOnce in the background.")), WATCH.stillMs))]);
+  if (current.next) current.next = void 0;
+  if (file instanceof Error) throw file;
+  return { file, data: (await readFile2(file)).toString("base64") };
+}
+async function watchFrames(args, device) {
+  if (watch && device && watch.link.peer.name !== device) endWatch("Watching another device.");
+  let started = false;
+  if (!watch) {
+    const refused = await startWatch(args, device);
+    if (refused) return refused;
+    started = true;
+  }
+  const current = watch;
+  clearTimeout(current.idle);
+  const count = Math.min(WATCH.count, Math.max(1, Math.round(typeof args.count === "number" ? args.count : 1)));
+  const gap = Math.min(WATCH.interval.max, Math.max(WATCH.interval.min, typeof args.interval_seconds === "number" ? args.interval_seconds : WATCH.interval.default));
+  const content = [];
+  const saved = [];
+  let problem;
+  for (let index = 0; index < count; index++) {
+    if (index) await new Promise((resolve) => setTimeout(resolve, gap * 1e3));
+    if (watch !== current) {
+      problem = current.ended ?? "Watching ended.";
+      break;
+    }
+    try {
+      const still = await takeWatchStill(current);
+      saved.push(still.file);
+      content.push({ type: "image", data: still.data, mimeType: "image/jpeg" });
+    } catch (error) {
+      problem = error instanceof Error ? error.message : String(error);
+      break;
+    }
+  }
+  if (watch === current) current.idle = setTimeout(() => endWatch("No watch_frames call for 5 minutes."), WATCH.idle);
+  const lines = [`${started ? `${current.link.peer.name} is sharing. ` : ""}${saved.length} still${saved.length === 1 ? "" : "s"} from ${current.link.peer.name}${saved.length ? `, saved as:
+${saved.join("\n")}` : "."}`];
+  if (problem) lines.push(problem);
+  lines.push(watch === current ? "Still watching: call watch_frames again for new stills, watch_stop when done." : "Not watching any more.");
+  return [{ type: "text", text: lines.join("\n\n") }, ...content];
+}
 async function requestFrom(kind, args, device) {
   const purpose = typeof args.purpose === "string" ? args.purpose.trim() : "";
   if (!purpose) throw new Error("purpose is required: say what you need and why, in a sentence the user reads on their device.");
@@ -4624,6 +4850,9 @@ ${failures.join("\n")}`);
   return parts.join("\n\n");
 }
 async function openSaved(device, seconds, folder) {
+  if (watch && !folder && (!device || device === watch.link.peer.name)) return { ...watch.link, close: () => {
+  } };
+  if (watch) endWatch(`Stopped watching ${watch.link.peer.name} for this.`);
   const identity = await loadOrCreateIdentity();
   const devices = await listDevices();
   const picked = pickDevice(devices, device);
@@ -4708,6 +4937,13 @@ async function callTool(name, args) {
     return `Paired with ${link.peer.name}. It now appears in list_devices; send_file, send_text and receive_files work with it.`;
   }
   const device = typeof args.device === "string" && args.device ? args.device : void 0;
+  if (name === "watch_frames") return watchFrames(args, device);
+  if (name === "watch_stop") {
+    if (!watch) return "Not watching.";
+    const peer = watch.link.peer.name;
+    endWatch("Stopped.");
+    return `Stopped watching ${peer}.`;
+  }
   if (name === "receive_files") return receiveFiles(args, device);
   if (name === "request_photo" || name === "request_scan" || name === "request_file") return requestFrom(name.slice("request_".length), args, device);
   if (name === "send_text") {
@@ -4753,8 +4989,8 @@ async function answer(request) {
     case "tools/call": {
       const params = request.params ?? {};
       try {
-        const text = await callTool(String(params.name), params.arguments ?? {});
-        return reply({ content: [{ type: "text", text }] });
+        const result = await callTool(String(params.name), params.arguments ?? {});
+        return reply({ content: typeof result === "string" ? [{ type: "text", text: result }] : result });
       } catch (error) {
         return reply({ content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true });
       }
@@ -4783,7 +5019,10 @@ function runMcp() {
     });
   });
   return new Promise((resolve) => lines.on("close", () => {
-    void queue.then(() => resolve(0));
+    void queue.then(() => {
+      endWatch("The agent closed.");
+      resolve(0);
+    });
   }));
 }
 
