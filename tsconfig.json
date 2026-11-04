@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node", "vite/client"],
+    "paths": { "@paironce/core": ["../core/src/index.ts"] }
+  },
+  "include": ["src/**/*.ts"]
+}

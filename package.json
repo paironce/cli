@@ -1,0 +1,38 @@
+{
+  "name": "paironce",
+  "version": "0.1.0",
+  "description": "Send files and text from a terminal to your phone or computer through PairOnce: paired once, end-to-end encrypted, direct between the devices.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "paironce": "dist/paironce.mjs"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "homepage": "https://paironce.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/paironce/cli.git"
+  },
+  "keywords": [
+    "file-transfer",
+    "airdrop",
+    "webrtc",
+    "end-to-end-encryption",
+    "cli",
+    "mcp"
+  ],
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "node-datachannel": "0.33.4",
+    "zod": "4.6.7"
+  }
+}
