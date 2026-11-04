@@ -3478,7 +3478,7 @@ var PeerSession = class {
     }
     const path7 = this.#readyPath;
     if (path7) {
-      this.#callbacks.onStatus(path7 === "turn" ? "Paired through TURN relay" : "Paired through direct connection");
+      this.#callbacks.onStatus(this.#channel instanceof TunnelChannel ? "Paired through the PairOnce tunnel" : path7 === "turn" ? "Paired through TURN relay" : "Paired through direct connection");
       this.#callbacks.onReady(path7);
       this.#scheduleRelayRenewal();
     }
@@ -4362,7 +4362,7 @@ async function sendPath(link, file, report = say) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.4.0-rc.1";
+var CLI_VERSION = "0.4.0";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}
@@ -4654,7 +4654,7 @@ blocks direct connections. The other device accepts every file before it arrives
 function relaunchedForProxy() {
   const proxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
   if (!proxy || process.env.NODE_USE_ENV_PROXY) return void 0;
-  const child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], { stdio: "inherit", env: { ...process.env, NODE_USE_ENV_PROXY: "1" } });
+  const child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], { stdio: "inherit", env: { ...process.env, NODE_USE_ENV_PROXY: "1", NODE_NO_WARNINGS: "1" } });
   return new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 1)));
 }
 async function main(argv) {

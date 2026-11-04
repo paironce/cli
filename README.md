@@ -72,9 +72,11 @@ encrypted bytes it cannot read.
 This computer's device key and the list of paired devices are kept in `~/.paironce` (or `$PAIRONCE_HOME`), readable only
 by you. The private key never leaves this computer.
 
-It connects directly whenever the networks allow it, and otherwise through the encrypted relay over UDP, TCP or TLS on
-port 443, so it also works on servers and in containers that block UDP. Networks that only allow traffic through an HTTP
-proxy are not supported yet. `PAIRONCE_DEBUG=1` shows each step of connecting.
+It connects directly whenever the networks allow it, otherwise through the encrypted relay over UDP, TCP or TLS on port
+443, and where even that is blocked, through the PairOnce tunnel: the same encrypted data over a secure WebSocket to
+paironce.com. So it works on servers, in containers that block UDP, and behind a web proxy (`HTTPS_PROXY` is used
+automatically). In a cloud sandbox with an allow-list, such as Claude Code on the web, add `paironce.com` to the allowed
+domains. `PAIRONCE_DEBUG=1` shows each step of connecting.
 
 Requires Node.js 22 or later on Windows, macOS (x64 and arm64) or Linux (x64 and arm64).
 

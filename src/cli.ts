@@ -101,13 +101,14 @@ blocks direct connections. The other device accepts every file before it arrives
 
 /**
  * Behind a web proxy (HTTPS_PROXY), Node's fetch and WebSocket reach paironce.com only with NODE_USE_ENV_PROXY=1, read
- * when Node starts: run again with it, passing the terminal and the exit code through. The tunnel (2.22.0) then carries
+ * when Node starts: run again with it (and without Node's notice that this is experimental), passing the terminal and
+ * the exit code through. The tunnel (2.22.0) then carries
  * the connection where WebRTC cannot get out.
  */
 function relaunchedForProxy(): Promise<number> | undefined {
   const proxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
   if (!proxy || process.env.NODE_USE_ENV_PROXY) return undefined;
-  const child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], { stdio: "inherit", env: { ...process.env, NODE_USE_ENV_PROXY: "1" } });
+  const child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], { stdio: "inherit", env: { ...process.env, NODE_USE_ENV_PROXY: "1", NODE_NO_WARNINGS: "1" } });
   return new Promise(resolve => child.on("exit", code => resolve(code ?? 1)));
 }
 
