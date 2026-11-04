@@ -1,16 +1,15 @@
 /**
- * What the web app's connection code expects from a browser, supplied in Node: WebRTC from node-datachannel (its
- * standard RTCPeerConnection API, the libdatachannel library underneath). WebSocket, fetch, File, Blob and Web Crypto
- * are Node's own (22 or later).
+ * What the web app's connection code expects from a browser, supplied in Node: WebRTC from @roamhq/wrtc, which is
+ * Google's libwebrtc (the engine inside Chrome) with the standard RTCPeerConnection API. It reaches the relay over UDP,
+ * TCP and TLS on port 443, so it also connects from containers and networks that block UDP (0.2.0; node-datachannel's
+ * prebuilt library could only use the relay over UDP). WebSocket, fetch, File, Blob and Web Crypto are Node's own (22+).
  */
-import { initLogger } from "node-datachannel";
-import { RTCDataChannel, RTCIceCandidate, RTCPeerConnection, RTCSessionDescription } from "node-datachannel/polyfill";
+import wrtc from "@roamhq/wrtc";
 
 const [major] = process.versions.node.split(".").map(Number);
 if (!major || major < 22) {
   console.error(`PairOnce needs Node.js 22 or later (this is ${process.versions.node}).`);
   process.exit(1);
 }
+const { RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, RTCDataChannel } = wrtc;
 Object.assign(globalThis, { RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, RTCDataChannel });
-// PAIRONCE_DEBUG=1 prints the WebRTC library's own log (ICE candidates, relay allocation) to stderr, for network problems.
-if (process.env.PAIRONCE_DEBUG) initLogger("Debug", (level, message) => { process.stderr.write(`[webrtc ${level}] ${message}\n`); });

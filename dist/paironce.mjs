@@ -5,18 +5,14 @@
 var define_import_meta_env_default = {};
 
 // src/env.ts
-import { initLogger } from "node-datachannel";
-import { RTCDataChannel, RTCIceCandidate, RTCPeerConnection as RTCPeerConnection2, RTCSessionDescription } from "node-datachannel/polyfill";
+import wrtc from "@roamhq/wrtc";
 var [major] = process.versions.node.split(".").map(Number);
 if (!major || major < 22) {
   console.error(`PairOnce needs Node.js 22 or later (this is ${process.versions.node}).`);
   process.exit(1);
 }
+var { RTCPeerConnection: RTCPeerConnection2, RTCSessionDescription, RTCIceCandidate, RTCDataChannel } = wrtc;
 Object.assign(globalThis, { RTCPeerConnection: RTCPeerConnection2, RTCSessionDescription, RTCIceCandidate, RTCDataChannel });
-if (process.env.PAIRONCE_DEBUG) initLogger("Debug", (level, message) => {
-  process.stderr.write(`[webrtc ${level}] ${message}
-`);
-});
 
 // src/cli.ts
 import { createInterface as createInterface2 } from "node:readline/promises";
@@ -4039,6 +4035,8 @@ async function connect(identity, target2, ui, options = {}) {
         pairingExpiresAt: room.expiresAt,
         ...target2.kind === "saved" && room.role === "host" && room.code ? { pairingCode: room.code } : {},
         isPro: () => false,
+        // PAIRONCE_FORCE_RELAY=1 skips the direct attempt: for checking the relay path on a given network.
+        forceRelay: process.env.PAIRONCE_FORCE_RELAY === "1",
         ...room.expected ? { expectedPeerIdentity: room.expected } : {},
         ...options.diskReceive ? { diskReceive: options.diskReceive } : {}
       });
@@ -4172,7 +4170,7 @@ async function sendPath(link, file, report = say) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.1.3";
+var CLI_VERSION = "0.2.0";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}

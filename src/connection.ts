@@ -152,6 +152,8 @@ export async function connect(identity: DeviceIdentity, target: Target, ui: Conn
         pairingExpiresAt: room.expiresAt,
         ...(target.kind === "saved" && room.role === "host" && room.code ? { pairingCode: room.code } : {}),
         isPro: () => false,
+        // PAIRONCE_FORCE_RELAY=1 skips the direct attempt: for checking the relay path on a given network.
+        forceRelay: process.env.PAIRONCE_FORCE_RELAY === "1",
         ...(room.expected ? { expectedPeerIdentity: room.expected } : {}),
         ...(options.diskReceive ? { diskReceive: options.diskReceive } : {}),
       });
