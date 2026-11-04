@@ -14,14 +14,14 @@
  */
 import "./env";
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import path from "node:path";
 import { connect, type ConnectUi, type Link, type Target } from "./connection";
 import { createDiskReceiver } from "./disk";
 import { receiveInto } from "./receive";
-import { forgetDevice, listDevices, loadOrCreateIdentity, pickDevice } from "./store";
+import { forgetDevice, listDevices, loadOrCreateIdentity, pickDevice, safeName } from "./store";
 import { runMcp } from "./mcp";
 import { CLI_VERSION } from "./version";
 import type { DeviceIdentity } from "../../../apps/app/src/identity";
@@ -61,7 +61,7 @@ export const terminalUi: ConnectUi = {
   status: text => { if (process.env.PAIRONCE_DEBUG) say(`  ${text}`); },
   code: code => say(`\nOn your other device, open https://paironce.com, choose "Enter a code" and type:\n\n    ${code.slice(0, 3)} ${code.slice(3)}\n`),
   safetyCode: code => say(`Safety code: ${groups(code)}  (the other screen must show the same)`),
-  approve: peer => ask(`Connect "${peer.name}"? Check that both screens show the same safety code.`),
+  approve: peer => ask(`Connect "${safeName(peer.name)}"? Check that both screens show the same safety code.`),
 };
 
 /** A saved device when there is one (named with --to or --from), else a new pairing with a code. */
@@ -80,10 +80,11 @@ async function open(identity: DeviceIdentity, name: string | undefined, folder?:
 
 async function receive(link: Link, folder: string, acceptAll: boolean): Promise<void> {
   await receiveInto(link, folder, {
-    accept: async offer => acceptAll || ask(`${link.peer.name} sends ${offer.name} (${human(offer.size)}). Accept?`),
+    accept: async offer => acceptAll || ask(`${link.peer.name} sends ${safeName(offer.name)} (${human(offer.size)}). Accept?`),
     saved: file => say(`Saved ${file}`),
-    failed: (name, message) => say(`Could not save ${name}: ${message}`),
-    text: text => { process.stdout.write(`${text}
+    failed: (name, message) => say(`Could not save ${safeName(name)}: ${message}`),
+    // On a terminal, what the other device wrote cannot move the cursor or set anything; a pipe gets the text as it is.
+    text: text => { process.stdout.write(`${process.stdout.isTTY ? text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "�") : text}
 `); },
   });
   say(`Receiving into ${folder}. Press Ctrl+C to stop.`);
@@ -99,7 +100,7 @@ const HELP = `paironce ${CLI_VERSION}: send files and text from this terminal to
   paironce receive               receive into this folder (--to <folder>, --yes accepts without asking)
   paironce devices               list paired devices
   paironce forget <name>         forget a paired device
-  paironce mcp                   run as an MCP server for AI agents (pair_device, send_file, send_text, receive_files, list_devices)
+  paironce mcp                   run as an MCP server for AI agents (pairing, sending, receiving, requests, watching)
 
   --name "<name>"                what the other device shows for this one (or PAIRONCE_NAME), e.g. "Claude Code · Agent"
   --agent                        mark this device as an AI agent on the other device (always on for mcp)
@@ -134,7 +135,12 @@ async function main(argv: string[]): Promise<number> {
     process.env.PAIRONCE_AGENT = "1";
     // An empty variable counts as unset, as store.ts reads it.
     if (!process.env.PAIRONCE_FORGET_AFTER) process.env.PAIRONCE_FORGET_AFTER = String(EPHEMERAL_FORGET_AFTER);
-    if (!process.env.PAIRONCE_HOME) process.env.PAIRONCE_HOME = mkdtempSync(path.join(tmpdir(), "paironce-"));
+    // A folder of its own, also under a set PAIRONCE_HOME (an empty variable counts as unset, as store.ts reads it): nothing
+    // from a long-lived identity is used, and its private key does not outlive this run.
+    const folder = mkdtempSync(path.join(process.env.PAIRONCE_HOME || tmpdir(), "paironce-"));
+    process.env.PAIRONCE_HOME = folder;
+    process.on("exit", () => { try { rmSync(folder, { recursive: true, force: true }); } catch { /* The system's temporary folder is cleared in time. */ } });
+    for (const signal of ["SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(1));
   }
   if (command === "mcp") return runMcp();
   const identity = await loadOrCreateIdentity();
@@ -154,6 +160,12 @@ async function main(argv: string[]): Promise<number> {
   if (command === "pair") {
     const code = args.join("").replace(/\s/g, "");
     if (code && !/^\d{6}$/.test(code)) { say("The code has six digits."); return 1; }
+    // Joining a code shown elsewhere pairs with whoever showed it, approved over there. That is for a person at this
+    // terminal; an agent shows its own code instead (pair_device), so the person's device is the one that joins.
+    if (code && (!process.stdin.isTTY || process.env.PAIRONCE_AGENT === "1")) {
+      say(`"paironce pair <code>" is for a person at a terminal. Run "paironce pair" to show a code, or use pair_device from an agent.`);
+      return 1;
+    }
     const link = await connect(identity, code ? { kind: "join", code } : { kind: "host" }, terminalUi, { signal: AbortSignal.timeout(600_000) });
     say(`Paired with ${link.peer.name}. Next time, "paironce send <file>" connects without a code.`);
     link.close();

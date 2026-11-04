@@ -23,7 +23,7 @@ export function terminalName(system = platform()): string {
 
 async function writePrivate(file: string, value: unknown): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temporary = `${file}.${process.pid}.tmp`;
+  const temporary = `${file}.${process.pid}.${toBase64Url(randomBytes(4))}.tmp`;
   await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   await rename(temporary, file);
 }
@@ -37,6 +37,9 @@ async function usable(stored: StoredIdentity): Promise<DeviceIdentity> {
   const privateKey = await crypto.subtle.importKey("jwk", stored.privateKey, { name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]);
   return { id: stored.id, name: stored.name, publicKey: stored.publicKey, privateKey, createdAt: stored.createdAt };
 }
+
+/** What a terminal or an agent may be shown from the other device: no control, escape or text-direction characters. */
+export const safeName = (name: string) => name.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ").replace(/\s+/g, " ").trim() || "device";
 
 /** A name another device can show: 1–80 characters, no control characters. */
 export function cleanName(name: string): string {
@@ -73,7 +76,7 @@ export async function saveDevice(device: DeviceDescriptor, now = Date.now()): Pr
   const devices = await listDevices();
   const known = devices.find(item => item.id === device.id);
   if (known && known.publicKey !== device.publicKey) throw new Error("A saved device with this ID has a different key. Remove it first.");
-  const saved: PairedDevice = { ...known, id: device.id, name: device.name, publicKey: device.publicKey, pairedAt: known?.pairedAt ?? now, lastSeenAt: now };
+  const saved: PairedDevice = { ...known, id: device.id, name: safeName(device.name), publicKey: device.publicKey, pairedAt: known?.pairedAt ?? now, lastSeenAt: now };
   await writePrivate(devicesFile(), [saved, ...devices.filter(item => item.id !== device.id)]);
   return saved;
 }

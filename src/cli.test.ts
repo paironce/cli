@@ -70,9 +70,9 @@ describe("the MCP server", () => {
     const reply = await answer({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "send_text", arguments: { text: "hi" } } }) as { result: { isError: boolean; content: { text: string }[] } };
     expect(reply.result.isError).toBe(true);
     expect(reply.result.content[0]!.text).toContain("pair_device");
-    const bad = await answer({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "pair_device", arguments: { code: "12ab" } } }) as { result: { isError: boolean; content: { text: string }[] } };
+    const bad = await answer({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "pair_device", arguments: { confirm: true } } }) as { result: { isError: boolean; content: { text: string }[] } };
     expect(bad.result.isError).toBe(true);
-    expect(bad.result.content[0]!.text).toContain("six digits");
+    expect(bad.result.content[0]!.text).toContain("Nothing to confirm");
   });
 
   it("asks for a reason before it watches, and stops nothing when nothing is watched", async () => {

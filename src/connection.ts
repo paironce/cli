@@ -11,7 +11,7 @@ import type { DeliveryPath } from "@paironce/transfer";
 import { PeerSession, randomId, signalingOrigin, type DiskReceiver, type FileOffer, type FileReceipt, type PeerIdentityDescriptor, type ReceivedFile, type SessionCallbacks } from "../../../apps/app/src/session";
 import { PAIRING_CODE_TTL_MS, type DeviceDescriptor, type DeviceIdentity, type PairedDevice } from "../../../apps/app/src/identity";
 import { returningDeviceSession, returningPresence } from "../../../apps/app/src/returning-device";
-import { saveDevice } from "./store";
+import { safeName, saveDevice } from "./store";
 
 /** What the person sees and decides while connecting. */
 export interface ConnectUi {
@@ -126,7 +126,7 @@ export async function connect(identity: DeviceIdentity, target: Target, ui: Conn
         void ui.approve(candidate).then(yes => yes ? session.approvePairing() : session.rejectPairing()).catch(fail);
       },
       onPairingConfirmed: confirmed => {
-        peer = { ...confirmed, pairedAt: Date.now(), lastSeenAt: Date.now() };
+        peer = { ...confirmed, name: safeName(confirmed.name), pairedAt: Date.now(), lastSeenAt: Date.now() };
         // Remembered before the connection counts as ready, so a command that ends right after still keeps the device.
         saving = saveDevice(confirmed).then(saved => { peer = saved; }, error => { ui.status?.(error instanceof Error ? error.message : String(error)); });
       },
@@ -144,7 +144,9 @@ export async function connect(identity: DeviceIdentity, target: Target, ui: Conn
       onFileOffer: offer => events.offer?.(offer),
       onFileReceipt: receipt => events.receipt?.(receipt),
       onProgress: (label, fraction, direction) => events.progress?.(label, fraction, direction),
-      onError: message => fail(new Error(message)),
+      // The first thing a sandbox with an allow-list meets: say why, and what to do.
+      onError: message => fail(new Error(message === "The signaling connection failed."
+        ? `Could not reach ${httpOrigin().hostname}. In a cloud sandbox, add ${httpOrigin().hostname} to the allowed domains. PAIRONCE_DEBUG=1 shows each step.` : message)),
       onConnectionCodeUnavailable: reason => fail(new Error(reason === "limited" ? "Too many requests. Wait a moment, then try again." : "No code is available right now. Try again.")),
     };
     let session: PeerSession;

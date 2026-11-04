@@ -19,10 +19,10 @@ install there.
 | Command | What it does |
 | --- | --- |
 | `paironce pair` | Shows a six-digit code. On the other device, open paironce.com, choose **Enter a code** and type it. Both screens show the same safety code; approve the device in the terminal. |
-| `paironce pair 123456` | Joins with the code the other device shows. |
+| `paironce pair 123456` | Joins with the code the other device shows, for a person at this terminal. |
 | `paironce send <file>...` | Sends files to the paired device. With several paired devices, add `--to "<name>"`. The other device accepts each file before it arrives. |
 | `paironce text "<message>"` | Sends a message or a link. |
-| `paironce receive` | Receives files into the current folder (`--to <folder>`). Asks before each file; `--yes` accepts every file during this run. Large files are written straight to disk and continue after a dropped connection. |
+| `paironce receive` | Receives files into the current folder (`--to <folder>`). Asks before each file; `--yes` accepts every file during this run. Large files are written straight to disk, so they can be as large as the sender may send. |
 | `paironce devices` | Lists paired devices. |
 | `paironce forget <name>` | Forgets a paired device. |
 | `paironce mcp` | Runs as an MCP server for AI agents. |
@@ -41,7 +41,7 @@ When a paired device is not connected, the command asks it to connect: PairOnce 
 
 | Tool | What it does |
 | --- | --- |
-| `pair_device` | Pairs one of your devices. You open paironce.com there and read out the six-digit code; your device then asks you to approve the agent after comparing the safety code. Once per device. |
+| `pair_device` | Pairs one of your devices. The agent gives you a six-digit code; you open paironce.com on that device, choose **Enter a code** and type it. The agent then tells you a safety code, and goes on only after you say your device shows the same. Once per device. |
 | `send_file`, `send_text` | Sends to a paired device; you accept every file there. |
 | `receive_files` | Waits while you send files from your device (a photo of a whiteboard, a scan, a document) and saves them into `./inbox`. |
 | `request_photo`, `request_scan`, `request_file` | Asks for something specific, with the reason. Your device shows the request; you take the photo, scan the pages or choose the file there, or decline. Saved into `./inbox`. |

@@ -37,7 +37,7 @@ jobs:
           sudo ip6tables -A OUTPUT -p udp --dport 53 -j ACCEPT
           sudo ip6tables -A OUTPUT -o lo -j ACCEPT
           sudo ip6tables -A OUTPUT -p udp -j DROP
-      - run: paironce pair "${{ inputs.code }}"
+      - run: script -qec 'paironce pair "${{ inputs.code }}"' /dev/null  # joining a code needs a terminal
       - run: printf 'Sent from a GitHub Actions runner (%s network) at %s\n' "${{ inputs.network }}" "$(date -u)" > runner-check.txt
       - run: paironce send runner-check.txt
       - run: paironce text "runner says hello (${{ inputs.network }})"
