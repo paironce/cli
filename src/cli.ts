@@ -47,6 +47,8 @@ const groups = (code: string) => (code.length > 6 ? code.match(/.{1,4}/g) ?? [co
 
 /** The terminal's side of connecting: codes and the safety code on screen, approval asked here. */
 export const terminalUi: ConnectUi = {
+  // PAIRONCE_DEBUG=1 shows each step of connecting (direct attempt, relay retry), for network problems.
+  status: text => { if (process.env.PAIRONCE_DEBUG) say(`  ${text}`); },
   code: code => say(`\nOn your other device, open https://paironce.com, choose "Enter a code" and type:\n\n    ${code.slice(0, 3)} ${code.slice(3)}\n`),
   safetyCode: code => say(`Safety code: ${groups(code)}  (the other screen must show the same)`),
   approve: peer => ask(`Connect "${peer.name}"? Check that both screens show the same safety code.`),
@@ -150,7 +152,13 @@ async function main(argv: string[]): Promise<number> {
     const text = args.join(" ");
     if (!text) { say('Write the message: paironce text "https://example.com"'); return 1; }
     const link = await open(identity, typeof flags.to === "string" ? flags.to : undefined);
-    try { await link.session.sendText(text); say(`Sent to ${link.peer.name}.`); } finally { link.close(); }
+    try {
+      await link.session.sendText(text);
+      // A message has no receipt: let it leave the buffer and cross the relay before this process ends the connection.
+      await link.session.drained();
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      say(`Sent to ${link.peer.name}.`);
+    } finally { link.close(); }
     return 0;
   }
   if (command === "receive") {
