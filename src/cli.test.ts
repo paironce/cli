@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { forgetDevice, listDevices, loadOrCreateIdentity, pickDevice, saveDevice, terminalName } from "./store";
+import { cleanName, forgetDevice, listDevices, loadOrCreateIdentity, pickDevice, saveDevice, terminalName } from "./store";
 import { answer, TOOLS } from "./mcp";
 
 const device = (id: string, name: string, at = 1) => ({ id: id.padEnd(16, "x"), name, publicKey: "k".repeat(87), pairedAt: at, lastSeenAt: at });
@@ -22,6 +22,22 @@ describe("the terminal's device", () => {
     expect(await listDevices()).toEqual([]);
   });
 
+  it("takes the name PAIRONCE_NAME gives it and keeps its key", async () => {
+    process.env.PAIRONCE_HOME = mkdtempSync(path.join(tmpdir(), "paironce-test-"));
+    const first = await loadOrCreateIdentity();
+    process.env.PAIRONCE_NAME = "Claude Code · Agent";
+    try {
+      const named = await loadOrCreateIdentity();
+      expect(named.name).toBe("Claude Code · Agent");
+      expect(named.publicKey).toBe(first.publicKey);
+      delete process.env.PAIRONCE_NAME;
+      expect((await loadOrCreateIdentity()).name).toBe("Claude Code · Agent");
+    } finally { delete process.env.PAIRONCE_NAME; }
+    expect(cleanName("  Build	bot  ")).toBe("Build bot");
+    expect(() => cleanName(" ")).toThrow("1 to 80");
+    expect(() => cleanName("x".repeat(81))).toThrow("1 to 80");
+  });
+
   it("names its platform like a browser names itself", () => {
     expect(terminalName("win32")).toBe("Windows · Terminal");
     expect(terminalName("darwin")).toBe("macOS · Terminal");
@@ -38,13 +54,13 @@ describe("the terminal's device", () => {
 });
 
 describe("the MCP server", () => {
-  it("introduces itself, lists its three tools and ignores notifications", async () => {
+  it("introduces itself, lists its five tools and ignores notifications", async () => {
     const init = await answer({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } }) as { result: { serverInfo: { name: string }; capabilities: object } };
     expect(init.result.serverInfo.name).toBe("paironce");
-    expect(init.result.capabilities).toEqual({ tools: {} });
+    expect(init.result.capabilities).toEqual({ tools: {}, logging: {} });
     expect(await answer({ jsonrpc: "2.0", method: "notifications/initialized" })).toBeUndefined();
     const list = await answer({ jsonrpc: "2.0", id: 2, method: "tools/list" }) as { result: { tools: typeof TOOLS } };
-    expect(list.result.tools.map(tool => tool.name)).toEqual(["list_devices", "send_file", "send_text"]);
+    expect(list.result.tools.map(tool => tool.name)).toEqual(["pair_device", "list_devices", "send_file", "send_text", "receive_files"]);
     const unknown = await answer({ jsonrpc: "2.0", id: 3, method: "resources/list" }) as { error: { code: number } };
     expect(unknown.error.code).toBe(-32601);
   });
@@ -53,6 +69,9 @@ describe("the MCP server", () => {
     process.env.PAIRONCE_HOME = mkdtempSync(path.join(tmpdir(), "paironce-test-"));
     const reply = await answer({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "send_text", arguments: { text: "hi" } } }) as { result: { isError: boolean; content: { text: string }[] } };
     expect(reply.result.isError).toBe(true);
-    expect(reply.result.content[0]!.text).toContain("npx paironce pair");
+    expect(reply.result.content[0]!.text).toContain("pair_device");
+    const bad = await answer({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "pair_device", arguments: { code: "12ab" } } }) as { result: { isError: boolean; content: { text: string }[] } };
+    expect(bad.result.isError).toBe(true);
+    expect(bad.result.content[0]!.text).toContain("six digits");
   });
 });

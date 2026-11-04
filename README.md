@@ -27,28 +27,38 @@ install there.
 | `paironce forget <name>` | Forgets a paired device. |
 | `paironce mcp` | Runs as an MCP server for AI agents. |
 
+`--name "<name>"` (or the `PAIRONCE_NAME` variable) sets what the other device shows for this one, for example
+`--name "Build server"`. The key stays the same, so paired devices still know it.
+
 When a paired device is not connected, the command asks it to connect: PairOnce on that device shows
 **"Windows · Terminal wants to reconnect"** with a **Connect** button.
 
 ## Use it from an AI agent (MCP)
 
-`paironce mcp` gives an agent three tools: `list_devices`, `send_file` and `send_text`. Pair first with
-`npx paironce pair`; the agent can then send to paired devices only, and every file is still accepted on the device by
-you.
+`paironce mcp` gives an agent five tools:
+
+| Tool | What it does |
+| --- | --- |
+| `pair_device` | Pairs one of your devices. You open paironce.com there and read out the six-digit code; your device then asks you to approve the agent after comparing the safety code. Once per device. |
+| `send_file`, `send_text` | Sends to a paired device; you accept every file there. |
+| `receive_files` | Waits while you send files from your device (a photo of a whiteboard, a scan, a document) and saves them into `./inbox`. |
+| `list_devices` | Lists the paired devices. |
+
+The agent reaches only devices you paired and approved, and nothing arrives anywhere unasked.
 
 Claude Code:
 
 ```sh
-claude mcp add paironce -- npx -y paironce mcp
+claude mcp add paironce -e PAIRONCE_NAME="Claude Code · Agent" -- npx -y paironce mcp
 ```
 
 Other clients (Cursor, Claude Desktop and others), in their MCP configuration:
 
 ```json
-{ "mcpServers": { "paironce": { "command": "npx", "args": ["-y", "paironce", "mcp"] } } }
+{ "mcpServers": { "paironce": { "command": "npx", "args": ["-y", "paironce", "mcp"], "env": { "PAIRONCE_NAME": "Cursor · Agent" } } } }
 ```
 
-Then ask: "send the build log to my phone".
+Then ask: "pair with my phone", "send the build log to my phone" or "I'll send you a photo of the error from my phone".
 
 ## How it works
 

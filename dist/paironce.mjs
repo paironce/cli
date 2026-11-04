@@ -22,8 +22,7 @@ Object.assign(globalThis, { RTCPeerConnection: RTCPeerConnection3, RTCSessionDes
 
 // src/cli.ts
 import { createInterface as createInterface2 } from "node:readline/promises";
-import { mkdir as mkdir3, rename as rename2, stat as stat3, writeFile as writeFile2 } from "node:fs/promises";
-import path5 from "node:path";
+import path6 from "node:path";
 
 // ../../node_modules/@paironce/crypto/src/index.ts
 var encoder = new TextEncoder();
@@ -2724,15 +2723,15 @@ var PeerSession = class {
       }
       this.#connectionReady = true;
       this.#clearConnectionTimer();
-      const path6 = await this.#detectPath();
+      const path7 = await this.#detectPath();
       if (generation !== this.#peerGeneration || this.#channel !== channel || this.#closed) return;
-      this.#readyPath = path6;
+      this.#readyPath = path7;
       if (this.#options.requirePairing) {
         this.#callbacks.onStatus("Secure channel ready; confirm the six-digit code on the joining device.");
         this.#callbacks.onPairingRequired?.();
       } else {
-        this.#callbacks.onStatus(path6 === "turn" ? "Connected through TURN relay" : "Direct connection established");
-        this.#callbacks.onReady(path6);
+        this.#callbacks.onStatus(path7 === "turn" ? "Connected through TURN relay" : "Direct connection established");
+        this.#callbacks.onReady(path7);
         this.#scheduleRelayRenewal();
       }
     });
@@ -3339,10 +3338,10 @@ var PeerSession = class {
       this.#pendingLiveFingerprint = void 0;
       this.#verifyLiveFingerprint(reported);
     }
-    const path6 = this.#readyPath;
-    if (path6) {
-      this.#callbacks.onStatus(path6 === "turn" ? "Paired through TURN relay" : "Paired through direct connection");
-      this.#callbacks.onReady(path6);
+    const path7 = this.#readyPath;
+    if (path7) {
+      this.#callbacks.onStatus(path7 === "turn" ? "Paired through TURN relay" : "Paired through direct connection");
+      this.#callbacks.onReady(path7);
       this.#scheduleRelayRenewal();
     }
   }
@@ -3447,12 +3446,12 @@ var PeerSession = class {
     if (live?.role !== "share") throw new Error("No live picture is on");
     await this.#sendLive({ op: "shutter-file", id: live.id, transferId });
   }
-  #endLive(live, notify) {
+  #endLive(live, notify2) {
     if (this.#live !== live) return;
     this.#live = void 0;
     this.#liveLastId = live.id;
     if (this.#liveAnswer?.id === live.id) this.#liveAnswer.settle("cancel");
-    if (notify && this.#channel?.readyState === "open") void this.#sendLive({ op: "stop", id: live.id }).catch(() => {
+    if (notify2 && this.#channel?.readyState === "open") void this.#sendLive({ op: "stop", id: live.id }).catch(() => {
     });
     if (live.role === "share" && live.sender && this.#peer && !this.#closed) {
       try {
@@ -3877,13 +3876,20 @@ async function usable(stored) {
   const privateKey = await crypto.subtle.importKey("jwk", stored.privateKey, { name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]);
   return { id: stored.id, name: stored.name, publicKey: stored.publicKey, privateKey, createdAt: stored.createdAt };
 }
+function cleanName(name) {
+  const clean = name.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+  if (!clean || clean.length > 80) throw new Error("The device name needs 1 to 80 characters.");
+  return clean;
+}
 async function loadOrCreateIdentity() {
+  const wanted = process.env.PAIRONCE_NAME ? cleanName(process.env.PAIRONCE_NAME) : void 0;
   const existing = await readJson(identityFile());
-  if (existing) return usable(existing);
+  if (existing && wanted && existing.name !== wanted) await writePrivate(identityFile(), { ...existing, name: wanted });
+  if (existing) return usable({ ...existing, name: wanted ?? existing.name });
   const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
   const stored = {
     id: toBase64Url(randomBytes(12)),
-    name: terminalName(),
+    name: wanted ?? terminalName(),
     publicKey: toBase64Url(new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey))),
     privateKey: await crypto.subtle.exportKey("jwk", pair.privateKey),
     createdAt: Date.now()
@@ -4018,10 +4024,10 @@ async function connect(identity, target2, ui, options = {}) {
         if (terminal) fail(new Error(reason));
         else ui.status?.(reason);
       },
-      onReady: (path6) => {
+      onReady: (path7) => {
         if (settled) return;
         settled = true;
-        void saving.then(() => resolve({ session, peer: peer ?? { ...room.expected, pairedAt: Date.now(), lastSeenAt: Date.now() }, path: path6, events, close: () => session.close() }));
+        void saving.then(() => resolve({ session, peer: peer ?? { ...room.expected, pairedAt: Date.now(), lastSeenAt: Date.now() }, path: path7, events, close: () => session.close() }));
       },
       onText: (text) => events.text?.(text),
       onFile: (file) => events.file?.(file),
@@ -4140,23 +4146,59 @@ function createDiskReceiver(folder) {
   };
 }
 
+// src/receive.ts
+import { mkdir as mkdir3, rename as rename2, stat as stat2, writeFile as writeFile2 } from "node:fs/promises";
+import path3 from "node:path";
+async function uniquePath(folder, name) {
+  const safe = path3.basename(name).replace(/[\u0000-\u001f<>:"/\\|?*]/g, "_").replace(/^\.+/, "_") || "file";
+  const { name: stem, ext } = path3.parse(safe);
+  for (let index = 0; ; index++) {
+    const candidate = path3.join(folder, index ? `${stem} (${index})${ext}` : safe);
+    try {
+      await stat2(candidate);
+    } catch {
+      return candidate;
+    }
+  }
+}
+async function receiveInto(link, folder, handlers) {
+  await mkdir3(folder, { recursive: true });
+  link.events.offer = (offer) => {
+    void (async () => {
+      await (await handlers.accept(offer) ? link.session.acceptFile(offer.transferId) : link.session.rejectFile(offer.transferId));
+    })().catch((error) => handlers.failed?.(offer.name, error instanceof Error ? error.message : String(error)));
+  };
+  link.events.file = (file) => {
+    void (async () => {
+      const target2 = await uniquePath(folder, file.name);
+      if (file.onDisk) await rename2(partPath(folder, file.diskEntry ?? file.transferId), target2);
+      else await writeFile2(target2, new Uint8Array(await (file.blob ?? await (await fetch(file.url)).blob()).arrayBuffer()));
+      URL.revokeObjectURL(file.url);
+      await link.session.confirmFileSaved(file.transferId).catch(() => {
+      });
+      handlers.saved?.(target2);
+    })().catch((error) => handlers.failed?.(file.name, error instanceof Error ? error.message : String(error)));
+  };
+  if (handlers.text) link.events.text = handlers.text;
+}
+
 // src/mcp.ts
 import { createInterface } from "node:readline";
-import path4 from "node:path";
+import path5 from "node:path";
 
 // src/send.ts
 import { openAsBlob as openAsBlob2 } from "node:fs";
-import { stat as stat2 } from "node:fs/promises";
-import path3 from "node:path";
+import { stat as stat3 } from "node:fs/promises";
+import path4 from "node:path";
 var say = (text) => {
   process.stderr.write(`${text}
 `);
 };
 var human = (bytes) => bytes >= 1e9 ? `${(bytes / 1e9).toFixed(2)} GB` : bytes >= 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.ceil(bytes / 1e3)} kB`;
 async function sendPath(link, file, report = say) {
-  const info = await stat2(file);
-  if (!info.isFile()) throw new Error(`${file} is not a file. Send the files inside a folder with: paironce send ${path3.join(file, "*")}`);
-  const name = path3.basename(file);
+  const info = await stat3(file);
+  if (!info.isFile()) throw new Error(`${file} is not a file. Send the files inside a folder with: paironce send ${path4.join(file, "*")}`);
+  const name = path4.basename(file);
   const blob = await openAsBlob2(file);
   const received = new Promise((resolve) => {
     const before = link.events.receipt;
@@ -4180,43 +4222,134 @@ async function sendPath(link, file, report = say) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.2.0";
+var CLI_VERSION = "0.3.0";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}
 `);
+var notify = (text) => {
+  log(text);
+  process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { level: "notice", logger: "paironce", data: text } })}
+`);
+};
 var target = { type: "string", description: "Name of a paired device (from list_devices). Optional when only one is paired." };
+var RECEIVE_WAIT = { default: 120, max: 600, quietAfterFile: 15 };
 var TOOLS = [
-  { name: "list_devices", description: "List the devices this computer is paired with through PairOnce.", inputSchema: { type: "object", properties: {} } },
+  {
+    name: "pair_device",
+    description: "Pair one of the user's devices (phone or computer) with this agent through PairOnce. Ask the user to open https://paironce.com on that device and read out the six-digit code it shows, then call this with the code. The device asks the user to approve this agent after comparing a safety code. Needed once per device.",
+    inputSchema: { type: "object", properties: { code: { type: "string", description: "The six-digit code shown on the user's device." } }, required: ["code"] }
+  },
+  { name: "list_devices", description: "List the devices this agent is paired with through PairOnce.", inputSchema: { type: "object", properties: {} } },
   {
     name: "send_file",
-    description: "Send files from this computer to one of the user's paired devices (phone or computer) through PairOnce, end-to-end encrypted. The user accepts each file on that device, and PairOnce must be open there.",
+    description: "Send files from this computer to one of the user's paired devices through PairOnce, end-to-end encrypted. The user accepts each file on that device, and PairOnce must be open there.",
     inputSchema: { type: "object", properties: { paths: { type: "array", items: { type: "string" }, description: "Files to send (absolute paths, or relative to the server's folder)." }, device: target }, required: ["paths"] }
   },
   {
     name: "send_text",
     description: "Send a message or a link to one of the user's paired devices through PairOnce, end-to-end encrypted. PairOnce must be open there.",
     inputSchema: { type: "object", properties: { text: { type: "string" }, device: target }, required: ["text"] }
+  },
+  {
+    name: "receive_files",
+    description: "Wait for the user to send files (photos, scans, documents) from one of their paired devices, and save them into a folder here. Tell the user to open https://paironce.com on that device, tap Connect, then choose the files. Returns the saved paths and any messages the user sent.",
+    inputSchema: { type: "object", properties: {
+      device: target,
+      folder: { type: "string", description: "Where to save, relative to the server's folder. Default: inbox." },
+      wait_seconds: { type: "number", description: `How long to wait for the user, ${RECEIVE_WAIT.default} by default, at most ${RECEIVE_WAIT.max}.` }
+    } }
   }
 ];
-async function openSaved(device) {
+async function openSaved(device, seconds, folder) {
   const identity = await loadOrCreateIdentity();
   const devices = await listDevices();
   const picked = pickDevice(devices, device);
-  if (picked === "none") throw new Error(devices.length ? `No paired device is called "${device}".` : 'No device is paired yet. Run "npx paironce pair" in a terminal first.');
+  if (picked === "none") throw new Error(devices.length ? `No paired device is called "${device}".` : "No device is paired yet. Ask the user for the code paironce.com shows on their device, then call pair_device.");
   if (picked === "ambiguous") throw new Error(`Name the device: ${devices.map((item) => item.name).join(", ")}.`);
-  log(`Connecting to ${picked.name}; open https://paironce.com there.`);
-  return connect(identity, { kind: "saved", device: picked }, { status: log }, { signal: AbortSignal.timeout(12e4) });
+  notify(`Connecting to ${picked.name}. On that device, open https://paironce.com: it shows "${identity.name} wants to reconnect"; tap Connect.`);
+  return connect(
+    identity,
+    { kind: "saved", device: picked },
+    { status: log },
+    { signal: AbortSignal.timeout(seconds * 1e3), ...folder ? { diskReceive: createDiskReceiver(folder) } : {} }
+  );
+}
+async function receiveFiles(args, device) {
+  const seconds = Math.min(RECEIVE_WAIT.max, Math.max(10, typeof args.wait_seconds === "number" ? args.wait_seconds : RECEIVE_WAIT.default));
+  const folder = path5.resolve(typeof args.folder === "string" && args.folder ? args.folder : "inbox");
+  const deadline = Date.now() + seconds * 1e3;
+  const link = await openSaved(device, seconds, folder);
+  const saved = [];
+  const texts = [];
+  const failures = [];
+  let pending = 0;
+  let lastActivity = Date.now();
+  try {
+    await receiveInto(link, folder, {
+      accept: async () => {
+        pending++;
+        lastActivity = Date.now();
+        return true;
+      },
+      saved: (file) => {
+        pending = Math.max(0, pending - 1);
+        saved.push(file);
+        lastActivity = Date.now();
+        notify(`Saved ${file}`);
+      },
+      failed: (name, message) => {
+        pending = Math.max(0, pending - 1);
+        failures.push(`${name}: ${message}`);
+        lastActivity = Date.now();
+      },
+      text: (text) => {
+        texts.push(text);
+        lastActivity = Date.now();
+      }
+    });
+    notify(`Connected to ${link.peer.name}. Waiting for files there (choose files to send) until ${new Date(deadline).toLocaleTimeString()}.`);
+    let closed = false;
+    link.events.closed = () => {
+      closed = true;
+    };
+    while (Date.now() < deadline && !closed) {
+      const quiet = (saved.length || texts.length || failures.length) && !pending && Date.now() - lastActivity > RECEIVE_WAIT.quietAfterFile * 1e3;
+      if (quiet) break;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  } finally {
+    link.close();
+  }
+  const parts = [saved.length ? `Saved ${saved.length} file${saved.length === 1 ? "" : "s"} from ${link.peer.name}:
+${saved.join("\n")}` : `No files arrived from ${link.peer.name}.`];
+  if (texts.length) parts.push(`Messages:
+${texts.join("\n")}`);
+  if (failures.length) parts.push(`Not saved:
+${failures.join("\n")}`);
+  return parts.join("\n\n");
 }
 async function callTool(name, args) {
   if (name === "list_devices") {
     const devices = await listDevices();
-    return devices.length ? devices.map((device2) => `${device2.name} (last seen ${new Date(device2.lastSeenAt).toISOString()})`).join("\n") : 'No paired devices. Run "npx paironce pair" in a terminal.';
+    return devices.length ? devices.map((device2) => `${device2.name} (last seen ${new Date(device2.lastSeenAt).toISOString()})`).join("\n") : "No paired devices. Ask the user for the code paironce.com shows on their device, then call pair_device.";
+  }
+  if (name === "pair_device") {
+    const code = typeof args.code === "string" ? args.code.replace(/\s/g, "") : "";
+    if (!/^\d{6}$/.test(code)) throw new Error("The code has six digits, as paironce.com shows it on the user's device.");
+    const identity = await loadOrCreateIdentity();
+    const link = await connect(identity, { kind: "join", code }, {
+      status: log,
+      safetyCode: (sas) => notify(`Safety code ${sas.match(/.{1,4}/g)?.join(" ") ?? sas}: the user's device shows the same code and asks to approve "${identity.name}".`)
+    }, { signal: AbortSignal.timeout(3e5) });
+    link.close();
+    return `Paired with ${link.peer.name}. It now appears in list_devices; send_file, send_text and receive_files work with it.`;
   }
   const device = typeof args.device === "string" && args.device ? args.device : void 0;
+  if (name === "receive_files") return receiveFiles(args, device);
   if (name === "send_text") {
     if (typeof args.text !== "string" || !args.text) throw new Error("text is required.");
-    const link = await openSaved(device);
+    const link = await openSaved(device, 120);
     try {
       await link.session.sendText(args.text);
       await link.session.drained();
@@ -4228,10 +4361,10 @@ async function callTool(name, args) {
   if (name === "send_file") {
     const paths = Array.isArray(args.paths) ? args.paths.filter((item) => typeof item === "string") : [];
     if (!paths.length) throw new Error("paths is required.");
-    const link = await openSaved(device);
+    const link = await openSaved(device, 120);
     try {
-      for (const file of paths) await sendPath(link, path4.resolve(file), log);
-      return `Sent ${paths.length === 1 ? path4.basename(paths[0]) : `${paths.length} files`} to ${link.peer.name}.`;
+      for (const file of paths) await sendPath(link, path5.resolve(file), log);
+      return `Sent ${paths.length === 1 ? path5.basename(paths[0]) : `${paths.length} files`} to ${link.peer.name}.`;
     } finally {
       link.close();
     }
@@ -4245,10 +4378,12 @@ async function answer(request) {
     case "initialize":
       return reply({
         protocolVersion: typeof request.params?.protocolVersion === "string" ? request.params.protocolVersion : "2025-06-18",
-        capabilities: { tools: {} },
+        capabilities: { tools: {}, logging: {} },
         serverInfo: { name: "paironce", version: CLI_VERSION }
       });
     case "ping":
+      return reply({});
+    case "logging/setLevel":
       return reply({});
     case "tools/list":
       return reply({ tools: TOOLS });
@@ -4305,7 +4440,7 @@ function parse(argv) {
       continue;
     }
     if (match[2] !== void 0) flags[match[1]] = match[2];
-    else if (["to", "from"].includes(match[1]) && argv[index + 1] && !argv[index + 1].startsWith("--")) flags[match[1]] = argv[++index];
+    else if (["to", "from", "name"].includes(match[1]) && argv[index + 1] && !argv[index + 1].startsWith("--")) flags[match[1]] = argv[++index];
     else flags[match[1]] = true;
   }
   return { flags, rest };
@@ -4345,40 +4480,17 @@ async function open(identity, name, folder) {
   say(`Connected to ${link.peer.name} (${link.path === "turn" ? "through the encrypted relay" : "direct"}).`);
   return link;
 }
-async function uniquePath(folder, name) {
-  const safe = path5.basename(name).replace(/[\u0000-\u001f<>:"/\\|?*]/g, "_").replace(/^\.+/, "_") || "file";
-  const { name: stem, ext } = path5.parse(safe);
-  for (let index = 0; ; index++) {
-    const candidate = path5.join(folder, index ? `${stem} (${index})${ext}` : safe);
-    try {
-      await stat3(candidate);
-    } catch {
-      return candidate;
-    }
-  }
-}
 async function receive(link, folder, acceptAll) {
-  await mkdir3(folder, { recursive: true });
-  say(`Receiving into ${folder}. Press Ctrl+C to stop.`);
-  link.events.offer = (offer) => {
-    void (async () => {
-      const yes = acceptAll || await ask(`${link.peer.name} sends ${offer.name} (${human(offer.size)}). Accept?`);
-      await (yes ? link.session.acceptFile(offer.transferId) : link.session.rejectFile(offer.transferId));
-    })().catch((error) => say(String(error instanceof Error ? error.message : error)));
-  };
-  link.events.file = (file) => {
-    void (async () => {
-      const target2 = await uniquePath(folder, file.name);
-      if (file.onDisk) await rename2(partPath(folder, file.diskEntry ?? file.transferId), target2);
-      else await writeFile2(target2, new Uint8Array(await (file.blob ?? await (await fetch(file.url)).blob()).arrayBuffer()));
-      URL.revokeObjectURL(file.url);
-      await link.session.confirmFileSaved(file.transferId).catch(() => {
-      });
-      say(`Saved ${target2}`);
-    })().catch((error) => say(`Could not save ${file.name}: ${error instanceof Error ? error.message : error}`));
-  };
-  link.events.text = (text) => process.stdout.write(`${text}
+  await receiveInto(link, folder, {
+    accept: async (offer) => acceptAll || ask(`${link.peer.name} sends ${offer.name} (${human(offer.size)}). Accept?`),
+    saved: (file) => say(`Saved ${file}`),
+    failed: (name, message) => say(`Could not save ${name}: ${message}`),
+    text: (text) => {
+      process.stdout.write(`${text}
 `);
+    }
+  });
+  say(`Receiving into ${folder}. Press Ctrl+C to stop.`);
   await new Promise((resolve) => {
     link.events.closed = resolve;
     process.once("SIGINT", () => resolve());
@@ -4393,7 +4505,9 @@ var HELP = `paironce ${CLI_VERSION}: send files and text from this terminal to y
   paironce receive               receive into this folder (--to <folder>, --yes accepts without asking)
   paironce devices               list paired devices
   paironce forget <name>         forget a paired device
-  paironce mcp                   run as an MCP server for AI agents (send_file, send_text, list_devices)
+  paironce mcp                   run as an MCP server for AI agents (pair_device, send_file, send_text, receive_files, list_devices)
+
+  --name "<name>"                what the other device shows for this one (or PAIRONCE_NAME), e.g. "Claude Code \xB7 Agent"
 
 Files are end-to-end encrypted and go directly between the devices, or through an encrypted relay when a network
 blocks direct connections. The other device accepts every file before it arrives. This device is kept in ~/.paironce.`;
@@ -4410,6 +4524,7 @@ async function main(argv) {
 `);
     return command || flags.help ? 0 : 1;
   }
+  if (typeof flags.name === "string") process.env.PAIRONCE_NAME = flags.name;
   if (command === "mcp") return runMcp();
   const identity = await loadOrCreateIdentity();
   if (command === "devices") {
@@ -4471,7 +4586,7 @@ async function main(argv) {
     return 0;
   }
   if (command === "receive") {
-    const folder = path5.resolve(typeof flags.to === "string" ? flags.to : ".");
+    const folder = path6.resolve(typeof flags.to === "string" ? flags.to : ".");
     const link = await open(identity, typeof flags.from === "string" ? flags.from : void 0, folder);
     try {
       await receive(link, folder, flags.yes === true);

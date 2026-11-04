@@ -38,13 +38,25 @@ async function usable(stored: StoredIdentity): Promise<DeviceIdentity> {
   return { id: stored.id, name: stored.name, publicKey: stored.publicKey, privateKey, createdAt: stored.createdAt };
 }
 
-/** This terminal's identity, made on first use. */
+/** A name another device can show: 1–80 characters, no control characters. */
+export function cleanName(name: string): string {
+  const clean = name.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+  if (!clean || clean.length > 80) throw new Error("The device name needs 1 to 80 characters.");
+  return clean;
+}
+
+/**
+ * This terminal's identity, made on first use. PAIRONCE_NAME (or --name) sets the name the other device shows, e.g.
+ * "Claude Code · Agent"; it is kept, and the key stays the same, so a paired device still knows this one.
+ */
 export async function loadOrCreateIdentity(): Promise<DeviceIdentity> {
+  const wanted = process.env.PAIRONCE_NAME ? cleanName(process.env.PAIRONCE_NAME) : undefined;
   const existing = await readJson<StoredIdentity>(identityFile());
-  if (existing) return usable(existing);
+  if (existing && wanted && existing.name !== wanted) await writePrivate(identityFile(), { ...existing, name: wanted });
+  if (existing) return usable({ ...existing, name: wanted ?? existing.name });
   const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]) as CryptoKeyPair;
   const stored: StoredIdentity = {
-    id: toBase64Url(randomBytes(12)), name: terminalName(),
+    id: toBase64Url(randomBytes(12)), name: wanted ?? terminalName(),
     publicKey: toBase64Url(new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey))),
     privateKey: await crypto.subtle.exportKey("jwk", pair.privateKey), createdAt: Date.now(),
   };

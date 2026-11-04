@@ -6,14 +6,16 @@
  *   paironce text "<message>"     send a message or a link
  *   paironce receive              receive files into this folder (--to <folder>, --yes to accept without asking)
  *   paironce devices              list paired devices; paironce forget <name> removes one
- *   paironce mcp                  run as an MCP server, so an AI agent can send to your devices
+ *   paironce mcp                  run as an MCP server, so an AI agent can send to and receive from your devices
+ *
+ * --name "<name>" (or PAIRONCE_NAME) sets what the other device shows for this one, e.g. "Claude Code · Agent".
  */
 import "./env";
 import { createInterface } from "node:readline/promises";
-import { mkdir, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { connect, type ConnectUi, type Link, type Target } from "./connection";
-import { createDiskReceiver, partPath } from "./disk";
+import { createDiskReceiver } from "./disk";
+import { receiveInto } from "./receive";
 import { forgetDevice, listDevices, loadOrCreateIdentity, pickDevice } from "./store";
 import { runMcp } from "./mcp";
 import { CLI_VERSION } from "./version";
@@ -30,7 +32,7 @@ function parse(argv: string[]) {
     const match = /^--([a-z-]+)(?:=(.*))?$/.exec(arg);
     if (!match) { rest.push(arg); continue; }
     if (match[2] !== undefined) flags[match[1]!] = match[2];
-    else if (["to", "from"].includes(match[1]!) && argv[index + 1] && !argv[index + 1]!.startsWith("--")) flags[match[1]!] = argv[++index]!;
+    else if (["to", "from", "name"].includes(match[1]!) && argv[index + 1] && !argv[index + 1]!.startsWith("--")) flags[match[1]!] = argv[++index]!;
     else flags[match[1]!] = true;
   }
   return { flags, rest };
@@ -68,35 +70,15 @@ async function open(identity: DeviceIdentity, name: string | undefined, folder?:
   return link;
 }
 
-async function uniquePath(folder: string, name: string): Promise<string> {
-  const safe = path.basename(name).replace(/[\u0000-\u001f<>:"/\\|?*]/g, "_").replace(/^\.+/, "_") || "file";
-  const { name: stem, ext } = path.parse(safe);
-  for (let index = 0; ; index++) {
-    const candidate = path.join(folder, index ? `${stem} (${index})${ext}` : safe);
-    try { await stat(candidate); } catch { return candidate; }
-  }
-}
-
 async function receive(link: Link, folder: string, acceptAll: boolean): Promise<void> {
-  await mkdir(folder, { recursive: true });
+  await receiveInto(link, folder, {
+    accept: async offer => acceptAll || ask(`${link.peer.name} sends ${offer.name} (${human(offer.size)}). Accept?`),
+    saved: file => say(`Saved ${file}`),
+    failed: (name, message) => say(`Could not save ${name}: ${message}`),
+    text: text => { process.stdout.write(`${text}
+`); },
+  });
   say(`Receiving into ${folder}. Press Ctrl+C to stop.`);
-  link.events.offer = offer => {
-    void (async () => {
-      const yes = acceptAll || await ask(`${link.peer.name} sends ${offer.name} (${human(offer.size)}). Accept?`);
-      await (yes ? link.session.acceptFile(offer.transferId) : link.session.rejectFile(offer.transferId));
-    })().catch(error => say(String(error instanceof Error ? error.message : error)));
-  };
-  link.events.file = file => {
-    void (async () => {
-      const target = await uniquePath(folder, file.name);
-      if (file.onDisk) await rename(partPath(folder, file.diskEntry ?? file.transferId), target);
-      else await writeFile(target, new Uint8Array(await (file.blob ?? await (await fetch(file.url)).blob()).arrayBuffer()));
-      URL.revokeObjectURL(file.url);
-      await link.session.confirmFileSaved(file.transferId).catch(() => {});
-      say(`Saved ${target}`);
-    })().catch(error => say(`Could not save ${file.name}: ${error instanceof Error ? error.message : error}`));
-  };
-  link.events.text = text => process.stdout.write(`${text}\n`);
   await new Promise<void>(resolve => { link.events.closed = resolve; process.once("SIGINT", () => resolve()); });
 }
 
@@ -109,7 +91,9 @@ const HELP = `paironce ${CLI_VERSION}: send files and text from this terminal to
   paironce receive               receive into this folder (--to <folder>, --yes accepts without asking)
   paironce devices               list paired devices
   paironce forget <name>         forget a paired device
-  paironce mcp                   run as an MCP server for AI agents (send_file, send_text, list_devices)
+  paironce mcp                   run as an MCP server for AI agents (pair_device, send_file, send_text, receive_files, list_devices)
+
+  --name "<name>"                what the other device shows for this one (or PAIRONCE_NAME), e.g. "Claude Code · Agent"
 
 Files are end-to-end encrypted and go directly between the devices, or through an encrypted relay when a network
 blocks direct connections. The other device accepts every file before it arrives. This device is kept in ~/.paironce.`;
@@ -119,6 +103,7 @@ async function main(argv: string[]): Promise<number> {
   const [command, ...args] = rest;
   if (flags.version) { process.stdout.write(`${CLI_VERSION}\n`); return 0; }
   if (!command || flags.help || command === "help") { process.stdout.write(`${HELP}\n`); return command || flags.help ? 0 : 1; }
+  if (typeof flags.name === "string") process.env.PAIRONCE_NAME = flags.name;
   if (command === "mcp") return runMcp();
   const identity = await loadOrCreateIdentity();
   if (command === "devices") {
