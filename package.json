@@ -1,8 +1,8 @@
 {
   "name": "paironce",
-  "version": "0.11.1",
+  "version": "0.11.2",
   "mcpName": "io.github.paironce/cli",
-  "description": "Send files and text from a terminal to your phone or computer through PairOnce: paired once, end-to-end encrypted, direct between the devices.",
+  "description": "CLI and MCP server: send files and text between a terminal or an AI agent and your own phone or computer. Paired once, end-to-end encrypted, direct between the devices.",
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
@@ -27,7 +27,12 @@
     "webrtc",
     "end-to-end-encryption",
     "cli",
-    "mcp"
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "ai-agent",
+    "claude",
+    "p2p"
   ],
   "scripts": {
     "build": "node build.mjs"

@@ -52,6 +52,11 @@ The agent reaches only devices you paired and approved, and nothing arrives anyw
 **Agent** when it asks to be approved and in your saved devices. Design and plans:
 [Agent as a Device](https://github.com/paironce/protocol/blob/main/agent-as-a-device.md).
 
+`send_file` does not send hidden files and folders (such as `.env` or `.ssh`), Windows's `AppData`, a Mac's `Library` or this
+device's own PairOnce files; you can still send those yourself with `paironce send`. A file that arrives after `receive_files`
+or a request stopped waiting is saved in the folder it was accepted for, and the next `receive_files` reports it. Changes in
+each version are in the [releases](https://github.com/paironce/cli/releases).
+
 Claude Code:
 
 ```sh
