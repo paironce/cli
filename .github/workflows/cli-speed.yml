@@ -28,7 +28,9 @@ jobs:
           node-version: 24
       - name: Install
         run: |
+          cd "$RUNNER_TEMP"
           time npm install -g "${{ inputs.package }}"
+          ls -la "$(npm root -g)" "$(npm prefix -g)/bin" | head -20
           paironce --version
           du -sh "$(npm root -g)/paironce"
       - name: Block outbound UDP except DNS
