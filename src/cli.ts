@@ -73,10 +73,14 @@ async function open(identity: DeviceIdentity, name: string | undefined, folder?:
   const target: Target = picked === "none" ? { kind: "host" } : { kind: "saved", device: picked };
   if (target.kind === "saved") say(`Connecting to ${target.device.name}… Open https://paironce.com there: it shows "${identity.name} wants to reconnect"; tap Connect.`);
   const diskReceive = folder ? createDiskReceiver(folder) : undefined;
+  await diskReceive?.restore();
+  receiving = diskReceive;
   const link = await connect(identity, target, terminalUi, { diskReceive, signal: AbortSignal.timeout(target.kind === "saved" ? 180_000 : 600_000) });
   say(`Connected to ${link.peer.name} (${pathName(link)}).`);
   return link;
 }
+
+let receiving: ReturnType<typeof createDiskReceiver> | undefined;
 
 async function receive(link: Link, folder: string, acceptAll: boolean): Promise<void> {
   await receiveInto(link, folder, {
@@ -89,6 +93,10 @@ async function receive(link: Link, folder: string, acceptAll: boolean): Promise<
   });
   say(`Receiving into ${folder}. Press Ctrl+C to stop.`);
   await new Promise<void>(resolve => { link.events.closed = resolve; process.once("SIGINT", () => resolve()); });
+  // A file cut off is kept to continue: closing hands it over, and that is written before this program ends.
+  link.close();
+  await new Promise(resolve => setTimeout(resolve, 50));
+  await receiving?.settled();
 }
 
 const HELP = `paironce ${CLI_VERSION}: send files and text from this terminal to your own devices (https://paironce.com).

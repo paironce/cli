@@ -1,6 +1,6 @@
 {
   "name": "paironce",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "mcpName": "io.github.paironce/cli",
   "description": "Send files and text from a terminal to your phone or computer through PairOnce: paired once, end-to-end encrypted, direct between the devices.",
   "license": "Apache-2.0",

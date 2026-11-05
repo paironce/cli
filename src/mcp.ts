@@ -56,7 +56,12 @@ type Content = { type: "text"; text: string } | { type: "image"; data: string; m
  * goes on where it stopped, also over a new connection.
  */
 let receiver: ReturnType<typeof createDiskReceiver> | undefined;
-const partsReceiver = () => receiver ??= createDiskReceiver(path.resolve(PARTS_FOLDER));
+async function partsReceiver() {
+  if (receiver) return receiver;
+  const fresh = createDiskReceiver(path.resolve(PARTS_FOLDER));
+  await fresh.restore();
+  return receiver = fresh;
+}
 
 /** The connection kept open between tool calls. One at a time: a tool for another device replaces it. */
 let kept: { link: Link; idle?: ReturnType<typeof setTimeout>; offers: FileOffer[]; texts: string[] } | undefined;
@@ -118,12 +123,13 @@ async function pairDevice(args: Record<string, unknown>): Promise<string> {
     const identity = await loadOrCreateIdentity();
     const state: NonNullable<typeof pairing> = { stop: new AbortController() };
     pairing = state;
+    const diskReceive = await partsReceiver();
     void connect(identity, { kind: "host" }, {
       status: log,
       code: code => { state.code = code; },
       safetyCode: sas => { state.sas = sas; },
       approve: peer => new Promise<boolean>(resolve => { state.peer = peer; state.decide = resolve; }),
-    }, { signal: AbortSignal.any([state.stop.signal, AbortSignal.timeout(PAIRING_CODE_TTL_MS)]), diskReceive: partsReceiver() }).then(link => { state.link = link; },
+    }, { signal: AbortSignal.any([state.stop.signal, AbortSignal.timeout(PAIRING_CODE_TTL_MS)]), diskReceive }).then(link => { state.link = link; },
       error => { state.failed = error instanceof Error ? error.message : String(error); });
     await until(() => Boolean(state.code || state.failed), 20_000);
     if (!state.code) { pairing = undefined; state.stop.abort(); throw new Error(state.failed ?? "No code is available right now. Try again."); }
@@ -352,8 +358,9 @@ async function openSaved(device: string | undefined, seconds: number, receiving 
   if (kept && kept.link.isOpen() && kept.link.peer.id === picked.id) return inUse(kept);
   closeKeptLink();
   notify(`Connecting to ${picked.name}. On that device, open https://paironce.com: it shows "${identity.name} wants to reconnect"; tap Connect.`);
+  const diskReceive = await partsReceiver();
   return keep(await connect(identity, { kind: "saved", device: picked }, { status: log },
-    { signal: AbortSignal.timeout(seconds * 1000), diskReceive: partsReceiver() }));
+    { signal: AbortSignal.timeout(seconds * 1000), diskReceive }));
 }
 
 async function receiveFiles(args: Record<string, unknown>, device: string | undefined): Promise<string> {
@@ -461,5 +468,5 @@ export function runMcp(): Promise<number> {
       if (response) process.stdout.write(`${JSON.stringify(response)}\n`);
     }).catch((error: unknown) => { log(`Could not answer a request: ${error instanceof Error ? error.message : String(error)}`); });
   });
-  return new Promise(resolve => lines.on("close", () => { void queue.then(async () => { await endWatch("The agent closed."); closeKeptLink(); pairing?.stop.abort(); resolve(0); }); }));
+  return new Promise(resolve => lines.on("close", () => { void queue.then(async () => { await endWatch("The agent closed."); closeKeptLink(); pairing?.stop.abort(); await new Promise(done => setTimeout(done, 50)); await receiver?.settled(); resolve(0); }); }));
 }

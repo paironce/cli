@@ -22,7 +22,7 @@ install there.
 | `paironce pair 123456` | Joins with the code the other device shows, for a person at this terminal. |
 | `paironce send <file>...` | Sends files to the paired device. With several paired devices, add `--to "<name>"`. The other device accepts each file before it arrives. |
 | `paironce text "<message>"` | Sends a message or a link. |
-| `paironce receive` | Receives files into the current folder (`--to <folder>`). Asks before each file; `--yes` accepts every file during this run. Large files are written straight to disk, so they can be as large as the sender may send. |
+| `paironce receive` | Receives files into the current folder (`--to <folder>`). Asks before each file; `--yes` accepts every file during this run. Large files are written straight to disk, so they can be as large as the sender may send, and one cut off continues when it is sent again. |
 | `paironce devices` | Lists paired devices. |
 | `paironce forget <name>` | Forgets a paired device. |
 | `paironce mcp` | Runs as an MCP server for AI agents. |

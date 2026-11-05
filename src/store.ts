@@ -6,6 +6,7 @@
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import path from "node:path";
+import { deviceIdForKey } from "@paironce/protocol";
 import { randomBytes, toBase64Url } from "@paironce/crypto";
 import type { DeviceDescriptor, DeviceIdentity, PairedDevice } from "../../../apps/app/src/identity";
 
@@ -84,9 +85,10 @@ export async function loadOrCreateIdentity(): Promise<DeviceIdentity> {
   if (existing && wanted && existing.name !== wanted) await writePrivate(identityFile(), { ...existing, name: wanted });
   if (existing) return usable({ ...existing, name: wanted ?? existing.name });
   const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]) as CryptoKeyPair;
+  const publicKey = toBase64Url(new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey)));
   const stored: StoredIdentity = {
-    id: toBase64Url(randomBytes(12)), name: wanted ?? terminalName(),
-    publicKey: toBase64Url(new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey))),
+    id: await deviceIdForKey(publicKey), name: wanted ?? terminalName(),
+    publicKey,
     privateKey: await crypto.subtle.exportKey("jwk", pair.privateKey), createdAt: Date.now(),
   };
   await writePrivate(identityFile(), stored);

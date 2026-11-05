@@ -333,6 +333,39 @@ describe("the store shared by several processes", () => {
   }, 20000);
 });
 
+describe("a part kept by a process that ended", () => {
+  const partial = (entry: string) => ({ peerId: "p".repeat(20), resumeKey: "r".repeat(32), entry, name: "big.bin", mime: "", size: 400, chunkSize: 100, totalChunks: 4, next: 2 });
+  const sink = { write: async () => {}, finish: async () => new File([], "x"), abort: async () => {}, park: async () => {} };
+
+  it("is found by the next one, for the same device and file", async () => {
+    const { createDiskReceiver, partPath } = await import("./disk");
+    writeFileSync(partPath(cwd, "entry-one"), new Uint8Array(200));
+    const first = createDiskReceiver(cwd);
+    void first.keepPartial(partial("entry-one"), sink);
+    await first.settled();
+    const next = createDiskReceiver(cwd);
+    expect(next.findPartial("p".repeat(20), "r".repeat(32))).toBeUndefined();
+    await next.restore();
+    expect(next.findPartial("p".repeat(20), "r".repeat(32))).toMatchObject({ entry: "entry-one", next: 2 });
+    expect(next.findPartial("q".repeat(20), "r".repeat(32))).toBeUndefined();
+    next.takePartial(next.findPartial("p".repeat(20), "r".repeat(32))!);
+    await vi.waitFor(() => expect(readdirSync(cwd).filter(name => name.endsWith(".json"))).toEqual([]));
+    const third = createDiskReceiver(cwd);
+    await third.restore();
+    expect(third.findPartial("p".repeat(20), "r".repeat(32))).toBeUndefined();
+  });
+
+  it("is not taken when the note lies about what is on disk, or names another place", async () => {
+    const { createDiskReceiver, partPath } = await import("./disk");
+    writeFileSync(partPath(cwd, "short"), new Uint8Array(50));
+    writeFileSync(path.join(cwd, ".paironce-short.json"), JSON.stringify({ partial: partial("short"), at: Date.now() }));
+    writeFileSync(path.join(cwd, ".paironce-away.json"), JSON.stringify({ partial: partial("../../away"), at: Date.now() }));
+    const next = createDiskReceiver(cwd);
+    await next.restore();
+    expect(next.findPartial("p".repeat(20), "r".repeat(32))).toBeUndefined();
+  });
+});
+
 describe("parts left on disk", () => {
   it("go when they can no longer be continued", async () => {
     const { removeOldParts } = await import("./disk");

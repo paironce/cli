@@ -1,4 +1,5 @@
 /** Sending one file from disk over an open link, shared by the commands and the MCP server. */
+import { createHash } from "node:crypto";
 import { openAsBlob } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
@@ -27,7 +28,9 @@ export async function sendPath(link: Link, file: string, report = say): Promise<
     if (direction === "sent" && percent >= shown + 10) { shown = percent; report(`  ${label}: ${percent}%`); }
   };
   report(`Sending ${name} (${human(info.size)}). Waiting for ${link.peer.name} to accept…`);
-  await link.session.sendFile(new File([blob], name, { lastModified: info.mtimeMs }));
+  // The same for this file until it changes, so a device that kept part of it continues when it is sent again.
+  const resumeKey = createHash("sha256").update(`paironce-send-v1\0${path.resolve(file)}\0${info.size}\0${info.mtimeMs}`).digest("base64url").slice(0, 32);
+  await link.session.sendFile(new File([blob], name, { lastModified: info.mtimeMs }), undefined, undefined, { resumeKey });
   await Promise.race([received, new Promise(resolve => setTimeout(resolve, 30_000))]);
   report(`Sent ${name}.`);
 }
