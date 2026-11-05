@@ -1,0 +1,46 @@
+# How fast the CLI carries a file between two identities on one cloud machine, through paironce.com. By hand only.
+name: CLI speed check
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: What to install
+        default: paironce@latest
+      network:
+        description: normal or no-udp
+        default: normal
+      force_relay:
+        description: "1 to skip the direct attempt"
+        default: "0"
+      size_mib:
+        description: File size in MiB, within the free allowance
+        default: "100"
+permissions:
+  contents: read
+jobs:
+  speed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Install
+        run: |
+          time npm install -g "${{ inputs.package }}"
+          paironce --version
+          du -sh "$(npm root -g)/paironce"
+      - name: Block outbound UDP except DNS
+        if: inputs.network == 'no-udp'
+        run: |
+          sudo iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+          sudo iptables -A OUTPUT -o lo -j ACCEPT
+          sudo iptables -A OUTPUT -p udp -j DROP
+          sudo ip6tables -A OUTPUT -p udp --dport 53 -j ACCEPT
+          sudo ip6tables -A OUTPUT -o lo -j ACCEPT
+          sudo ip6tables -A OUTPUT -p udp -j DROP
+      - run: node .github/tools/cli-speed.mjs
+        env:
+          SIZE_MIB: ${{ inputs.size_mib }}
+          PAIRONCE_FORCE_RELAY: ${{ inputs.force_relay == '1' && '1' || '' }}
