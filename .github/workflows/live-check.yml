@@ -14,6 +14,9 @@ on:
       package:
         description: What to install (paironce@latest, or github:paironce/cli#next for a candidate)
         default: paironce@latest
+      large_mib:
+        description: Instead of the small file and message, send a random file of this many MiB over the relay (0 for none)
+        default: "0"
 permissions:
   contents: read
 jobs:
@@ -39,5 +42,17 @@ jobs:
           sudo ip6tables -A OUTPUT -p udp -j DROP
       - run: script -qec 'paironce pair "${{ inputs.code }}"' /dev/null  # joining a code needs a terminal
       - run: printf 'Sent from a GitHub Actions runner (%s network) at %s\n' "${{ inputs.network }}" "$(date -u)" > runner-check.txt
+        if: inputs.large_mib == '0'
       - run: paironce send runner-check.txt
+        if: inputs.large_mib == '0'
       - run: paironce text "runner says hello (${{ inputs.network }})"
+        if: inputs.large_mib == '0'
+      - name: Send a large file over the relay
+        if: inputs.large_mib != '0'
+        env:
+          PAIRONCE_FORCE_RELAY: "1"
+        run: |
+          head -c $((${{ inputs.large_mib }} * 1048576)) /dev/urandom > large-check.bin
+          date -u
+          time paironce send large-check.bin
+          date -u
