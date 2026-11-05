@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       package:
-        description: What to install
+        description: What to install (paironce@latest, or branch:next for a candidate)
         default: paironce@latest
       network:
         description: normal or no-udp
@@ -29,8 +29,13 @@ jobs:
       - name: Install
         run: |
           cd "$RUNNER_TEMP"
-          time npm install -g "${{ inputs.package }}"
-          ls -la "$(npm root -g)" "$(npm prefix -g)/bin" | head -20
+          package="${{ inputs.package }}"
+          case "$package" in branch:*)
+            git clone --depth 1 -b "${package#branch:}" https://github.com/paironce/cli candidate
+            (cd candidate && npm pack --silent)
+            package="$(ls "$PWD"/candidate/*.tgz)";;
+          esac
+          time npm install -g "$package"
           paironce --version
           du -sh "$(npm root -g)/paironce"
       - name: Block outbound UDP except DNS
