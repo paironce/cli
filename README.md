@@ -57,6 +57,7 @@ Claude Code:
 ```sh
 claude mcp add paironce -e PAIRONCE_NAME="Claude Code · Agent" -- npx -y paironce mcp
 # in a throwaway sandbox: ... -- npx -y paironce mcp --ephemeral
+# on Windows, through cmd: claude mcp add paironce -- cmd /c npx -y paironce mcp
 ```
 
 Other clients (Cursor, Claude Desktop and others), in their MCP configuration:
