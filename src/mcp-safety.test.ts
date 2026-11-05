@@ -427,6 +427,58 @@ describe("a part two processes found", () => {
   });
 });
 
+describe("a file the other device stopped sending", () => {
+  const start = async () => {
+    const { callTool } = await import("./mcp");
+    const link = fakeLink({ usesTunnel: () => false });
+    link.isOpen = () => true;
+    links.current = link;
+    return { callTool, link };
+  };
+  const offered = { transferId: "t-a.txt-aaaaaaaaaaaaaaaa", name: "a.txt", size: 3, mime: "text/plain" };
+
+  it("is no longer on its way, and the call says so", async () => {
+    const { callTool, link } = await start();
+    const call = callTool("receive_files", { wait_seconds: 10 });
+    await vi.waitFor(() => expect(link.events.offer).toBeDefined(), { timeout: 5000 });
+    await pause(20);
+    link.events.offer(offered);
+    await pause(50);
+    link.events.fileClosed(offered.transferId, offered.name);
+    const said = await call;
+    expect(said).not.toContain("still on the way");
+    expect(said).toContain("a.txt: the other device stopped sending it.");
+  }, 30000);
+
+  it("is reported by the next call when it ended between calls", async () => {
+    const { callTool, link } = await start();
+    const call = callTool("receive_files", { wait_seconds: 10 });
+    await vi.waitFor(() => expect(link.events.offer).toBeDefined(), { timeout: 5000 });
+    await pause(20);
+    link.events.offer(offered);
+    expect(await call).toContain("still on the way");
+    link.events.fileClosed(offered.transferId, offered.name);
+    const next = await callTool("receive_files", { wait_seconds: 10 });
+    expect(next).not.toContain("still on the way");
+    expect(next).toContain("a.txt: the other device stopped sending it.");
+  }, 40000);
+});
+
+describe("what programs keep", () => {
+  it("is not sent by an agent: Windows's AppData, and a Mac's Library in the home folder", async () => {
+    const { refusedToAgent } = await import("./send");
+    const home = mkdtempSync(path.join(tmpdir(), "paironce-home-"));
+    const appData = path.join(home, "AppData", "Local", "Browser");
+    mkdirSync(appData, { recursive: true });
+    writeFileSync(path.join(appData, "Login Data"), "secret");
+    expect(await refusedToAgent(path.join(appData, "Login Data"), process.env.PAIRONCE_HOME!)).toMatch(/hidden/);
+    const plain = path.join(home, "Downloads");
+    mkdirSync(plain);
+    writeFileSync(path.join(plain, "photo.jpg"), "fine");
+    expect(await refusedToAgent(path.join(plain, "photo.jpg"), process.env.PAIRONCE_HOME!)).toBeUndefined();
+  });
+});
+
 describe("where an MCP tool saves", () => {
   it("is a folder inside the server's folder", async () => {
     const { insideFolder } = await import("./receive");

@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { openAsBlob } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import type { Link } from "./connection";
 
@@ -24,8 +25,11 @@ export async function refusedToAgent(file: string, ownHome: string): Promise<str
   const inside = (folder: string, item: string) => { const relative = path.relative(folder, item); return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? relative : undefined; };
   const shown = file.slice(0, 200);
   if (inside(home, real)) return `Not sending "${shown}": it is one of this device's own PairOnce files.`;
-  const parts = (inside(root, real) ?? real).split(/[\\/]/);
-  if (parts.some(part => part.startsWith("."))) return `Not sending "${shown}": hidden files and folders are not sent by an agent. The user can send it with: paironce send`;
+  // The temporary folder counts from itself as well: on Windows it lies inside AppData, and agents do make files there.
+  const parts = (inside(root, real) ?? inside(await realpath(tmpdir()), real) ?? real).split(/[\\/]/);
+  // A system's own folders for what programs keep, which have no dot: Windows's AppData, a Mac's Library in the home folder.
+  const userData = !inside(root, real) && inside(homedir(), real)?.split(/[\\/]/)[0] === "Library";
+  if (userData || parts.some(part => part.startsWith(".") || part.toLowerCase() === "appdata")) return `Not sending "${shown}": hidden files and folders are not sent by an agent. The user can send it with: paironce send`;
   return undefined;
 }
 

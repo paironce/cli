@@ -24,7 +24,7 @@ import { PAIRING_CODE_TTL_MS, type DeviceDescriptor } from "../../../apps/app/sr
 import type { FileOffer, ReceivedFile } from "../../../apps/app/src/session";
 import { connect, type Link, type LinkEvents } from "./connection";
 import { createDiskReceiver } from "./disk";
-import { insideFolder, receiveInto, saveArrived, stillArriving, wasAccepted } from "./receive";
+import { insideFolder, receiveInto, saveArrived, stillArriving, stopWaitingFor, wasAccepted } from "./receive";
 import { home, listDevices, loadOrCreateIdentity, pickDevice, safeName } from "./store";
 import { pathName, refusedToAgent, sendPath } from "./send";
 import { CLI_VERSION } from "./version";
@@ -88,6 +88,7 @@ function rest(current: NonNullable<typeof kept>): void {
       void saveArrived(link, file, path.resolve(PARTS_FOLDER), path.resolve(PARTS_FOLDER)).then(saved => { arrived.push(saved); notify(`Saved ${saved}`); },
         error => { notSaved.push(`${file.name}: ${error instanceof Error ? error.message : String(error)}`); });
     },
+    fileClosed: (transferId: string, name?: string) => { if (stopWaitingFor(link, transferId)) notSaved.push(`${name ?? "A file"}: the other device stopped sending it.`); },
     closed: () => { if (kept === current) closeKeptLink(); },
     requestAnswer: undefined, watchStillFile: undefined, watchEnded: undefined, receipt: undefined, progress: undefined, error: undefined,
   } satisfies LinkEvents);

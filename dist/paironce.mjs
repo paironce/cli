@@ -23,7 +23,7 @@ Object.assign(globalThis, { RTCPeerConnection: RTCPeerConnection3, RTCSessionDes
 // src/cli.ts
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir as tmpdir2 } from "node:os";
 import { createInterface as createInterface2 } from "node:readline/promises";
 import path6 from "node:path";
 
@@ -4482,6 +4482,7 @@ async function connect(identity, target2, ui, options = {}) {
       onWatchStillFile: (id, transferId) => events.watchStillFile?.(id, transferId),
       onWatchEnded: (id) => events.watchEnded?.(id),
       onFile: (file) => events.file?.(file),
+      onIncomingFileClosed: (transferId, name) => events.fileClosed?.(transferId, name),
       onFileOffer: (offer) => events.offer?.(offer),
       onFileReceipt: (receipt) => events.receipt?.(receipt),
       onProgress: (label, fraction, direction) => events.progress?.(label, fraction, direction),
@@ -4717,6 +4718,7 @@ function acceptedOn(link) {
   return folders;
 }
 var stillArriving = (link) => acceptedOn(link).size;
+var stopWaitingFor = (link, transferId) => acceptedOn(link).delete(transferId);
 var wasAccepted = (link, file) => acceptedOn(link).has(file.transferId);
 async function moveFile(from, to, renameFile = rename3) {
   try {
@@ -4762,6 +4764,9 @@ async function receiveInto(link, folder, handlers, partsFolder = folder) {
   link.events.file = (file) => {
     void saveArrived(link, file, folder, partsFolder).then((target2) => handlers.saved?.(target2)).catch((error) => handlers.failed?.(file.name, error instanceof Error ? error.message : String(error)));
   };
+  link.events.fileClosed = (transferId, name) => {
+    if (stopWaitingFor(link, transferId)) handlers.failed?.(name ?? "A file", "the other device stopped sending it.");
+  };
   if (handlers.text) link.events.text = handlers.text;
 }
 
@@ -4774,6 +4779,7 @@ import path5 from "node:path";
 import { createHash } from "node:crypto";
 import { openAsBlob as openAsBlob2 } from "node:fs";
 import { realpath as realpath2, stat as stat3 } from "node:fs/promises";
+import { homedir as homedir2, tmpdir } from "node:os";
 import path4 from "node:path";
 var say = (text) => {
   process.stderr.write(`${text}
@@ -4791,8 +4797,9 @@ async function refusedToAgent(file, ownHome) {
   };
   const shown = file.slice(0, 200);
   if (inside(home2, real)) return `Not sending "${shown}": it is one of this device's own PairOnce files.`;
-  const parts = (inside(root, real) ?? real).split(/[\\/]/);
-  if (parts.some((part) => part.startsWith("."))) return `Not sending "${shown}": hidden files and folders are not sent by an agent. The user can send it with: paironce send`;
+  const parts = (inside(root, real) ?? inside(await realpath2(tmpdir()), real) ?? real).split(/[\\/]/);
+  const userData = !inside(root, real) && inside(homedir2(), real)?.split(/[\\/]/)[0] === "Library";
+  if (userData || parts.some((part) => part.startsWith(".") || part.toLowerCase() === "appdata")) return `Not sending "${shown}": hidden files and folders are not sent by an agent. The user can send it with: paironce send`;
   return void 0;
 }
 async function sendPath(link, file, report = say) {
@@ -4823,7 +4830,7 @@ async function sendPath(link, file, report = say) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.11.0";
+var CLI_VERSION = "0.11.1";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}
@@ -4886,6 +4893,9 @@ function rest(current) {
           notSaved.push(`${file.name}: ${error instanceof Error ? error.message : String(error)}`);
         }
       );
+    },
+    fileClosed: (transferId, name) => {
+      if (stopWaitingFor(link, transferId)) notSaved.push(`${name ?? "A file"}: the other device stopped sending it.`);
     },
     closed: () => {
       if (kept === current) closeKeptLink();
@@ -5567,7 +5577,7 @@ async function main(argv) {
   if (flags.ephemeral) {
     process.env.PAIRONCE_AGENT = "1";
     if (!process.env.PAIRONCE_FORGET_AFTER) process.env.PAIRONCE_FORGET_AFTER = String(EPHEMERAL_FORGET_AFTER);
-    const base = process.env.PAIRONCE_HOME || tmpdir();
+    const base = process.env.PAIRONCE_HOME || tmpdir2();
     mkdirSync(base, { recursive: true });
     const folder = mkdtempSync(path6.join(base, "paironce-"));
     process.env.PAIRONCE_HOME = folder;

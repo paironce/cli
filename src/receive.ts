@@ -57,6 +57,9 @@ function acceptedOn(link: Link): Map<string, string> {
 /** Files this connection accepted that have not arrived yet. */
 export const stillArriving = (link: Link) => acceptedOn(link).size;
 
+/** An accepted file ended before it all arrived, so it is no longer on its way (CLI 0.11.1); whether it was. */
+export const stopWaitingFor = (link: Link, transferId: string) => acceptedOn(link).delete(transferId);
+
 /** Whether this file was accepted, and so has somewhere to go. */
 export const wasAccepted = (link: Link, file: ReceivedFile) => acceptedOn(link).has(file.transferId);
 
@@ -110,6 +113,9 @@ export async function receiveInto(link: Link, folder: string, handlers: ReceiveH
   link.events.file = (file: ReceivedFile) => {
     void saveArrived(link, file, folder, partsFolder).then(target => handlers.saved?.(target))
       .catch(error => handlers.failed?.(file.name, error instanceof Error ? error.message : String(error)));
+  };
+  link.events.fileClosed = (transferId, name) => {
+    if (stopWaitingFor(link, transferId)) handlers.failed?.(name ?? "A file", "the other device stopped sending it.");
   };
   if (handlers.text) link.events.text = handlers.text;
 }

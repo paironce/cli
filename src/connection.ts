@@ -28,6 +28,8 @@ export interface ConnectUi {
 export interface LinkEvents {
   offer?(offer: FileOffer): void;
   file?(file: ReceivedFile): void;
+  /** A file that was accepted ended before it all arrived. */
+  fileClosed?(transferId: string, name?: string): void;
   receipt?(receipt: FileReceipt): void;
   progress?(name: string, fraction: number, direction?: "sent" | "received"): void;
   text?(text: string): void;
@@ -142,6 +144,7 @@ export async function connect(identity: DeviceIdentity, target: Target, ui: Conn
       onWatchStillFile: (id, transferId) => events.watchStillFile?.(id, transferId),
       onWatchEnded: id => events.watchEnded?.(id),
       onFile: file => events.file?.(file),
+      onIncomingFileClosed: (transferId, name) => events.fileClosed?.(transferId, name),
       onFileOffer: offer => events.offer?.(offer),
       onFileReceipt: receipt => events.receipt?.(receipt),
       onProgress: (label, fraction, direction) => events.progress?.(label, fraction, direction),
