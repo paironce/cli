@@ -51,8 +51,11 @@ export interface ReceiveHandlers {
   text?(text: string): void;
 }
 
-/** From now on, files offered on `link` are accepted or declined, and the accepted ones are saved into `folder`. */
-export async function receiveInto(link: Link, folder: string, handlers: ReceiveHandlers): Promise<void> {
+/**
+ * From now on, files offered on `link` are accepted or declined, and the accepted ones are saved into `folder`.
+ * `partsFolder`: where the link's disk receiver keeps large files as they arrive, when not the same folder.
+ */
+export async function receiveInto(link: Link, folder: string, handlers: ReceiveHandlers, partsFolder = folder): Promise<void> {
   await mkdir(folder, { recursive: true });
   link.events.offer = offer => {
     void (async () => {
@@ -63,7 +66,7 @@ export async function receiveInto(link: Link, folder: string, handlers: ReceiveH
     void (async () => {
       const target = await uniquePath(folder, file.name);
       try {
-        if (file.onDisk) await rename(partPath(folder, file.diskEntry ?? file.transferId), target);
+        if (file.onDisk) await rename(partPath(partsFolder, file.diskEntry ?? file.transferId), target);
         else await writeFile(target, new Uint8Array(await (file.blob ?? await (await fetch(file.url)).blob()).arrayBuffer()));
       } catch (error) { await rm(target, { force: true }).catch(() => {}); throw error; }
       finally { URL.revokeObjectURL(file.url); }

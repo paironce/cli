@@ -21,7 +21,8 @@ import { createInterface } from "node:readline";
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { PAIRING_CODE_TTL_MS, type DeviceDescriptor } from "../../../apps/app/src/identity";
-import { connect, type Link } from "./connection";
+import type { FileOffer, ReceivedFile } from "../../../apps/app/src/session";
+import { connect, type Link, type LinkEvents } from "./connection";
 import { createDiskReceiver } from "./disk";
 import { insideFolder, receiveInto } from "./receive";
 import { listDevices, loadOrCreateIdentity, pickDevice, safeName } from "./store";
@@ -38,9 +39,62 @@ const target = { type: "string", description: "Name of a paired device (from lis
 /** How long receive_files waits by default and at most, and how long it waits after the last file before it returns. */
 export const RECEIVE_WAIT = { default: 120, max: 600, quietAfterFile: 15 } as const;
 /** Watching: stills per call, the gap between them (seconds), how long one still may take, and the idle close (ms). */
+/**
+ * How long the connection stays open after the last tool call, so the next task needs no tap on the person's device. They
+ * see it as connected and can end it there; messages and files they send meanwhile wait for the next receive_files.
+ */
+export const KEEP_OPEN_MS = 30 * 60_000;
+const HELD_MAX = 20;
+/** Where a kept connection's disk receiver writes large files as they arrive, whichever folder they end up in. */
+const PARTS_FOLDER = "inbox";
 export const WATCH = { count: 5, interval: { default: 1, min: 0.5, max: 10 }, stillMs: 20_000, idle: 5 * 60_000, stillBytes: 8 * 1024 * 1024 } as const;
 
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+
+/** The connection kept open between tool calls. One at a time: a tool for another device replaces it. */
+let kept: { link: Link; idle?: ReturnType<typeof setTimeout>; offers: FileOffer[]; texts: string[] } | undefined;
+
+export function closeKeptLink(): void {
+  const current = kept;
+  kept = undefined;
+  if (!current) return;
+  clearTimeout(current.idle);
+  current.link.close();
+}
+
+/** No tool is using the connection now: nothing arrives unasked, and it closes if no tool comes back to it. */
+function rest(current: NonNullable<typeof kept>): void {
+  if (kept !== current) return;
+  const { link, offers, texts } = current;
+  if (!link.isOpen()) { closeKeptLink(); return; }
+  Object.assign(link.events, {
+    offer: (offer: FileOffer) => { if (offers.length < HELD_MAX) offers.push(offer); else void link.session.rejectFile(offer.transferId).catch(() => {}); },
+    text: (text: string) => { texts.push(text); if (texts.length > HELD_MAX) texts.shift(); },
+    file: (file: ReceivedFile) => URL.revokeObjectURL(file.url),
+    closed: () => { if (kept === current) closeKeptLink(); },
+    requestAnswer: undefined, watchStillFile: undefined, watchEnded: undefined, receipt: undefined, progress: undefined, error: undefined,
+  } satisfies LinkEvents);
+  clearTimeout(current.idle);
+  current.idle = setTimeout(() => { if (kept === current) closeKeptLink(); }, KEEP_OPEN_MS);
+  current.idle.unref?.();
+}
+
+/** The kept connection for one tool: closing it hands it back. */
+function inUse(current: NonNullable<typeof kept>): Link {
+  clearTimeout(current.idle);
+  return { ...current.link, close: () => rest(current) };
+}
+
+function keep(link: Link): Link {
+  closeKeptLink();
+  kept = { link, offers: [], texts: [] };
+  return inUse(kept);
+}
+
+/** Offers that came in while no tool was waiting go to the tool that now decides on them. */
+function offerHeld(link: Link): void {
+  for (const offer of kept?.offers.splice(0) ?? []) link.events.offer?.(offer);
+}
 
 /** The pairing on its way (pair_device): this side shows the code, and the person's word on the safety code approves. */
 let pairing: { stop: AbortController; code?: string; sas?: string; peer?: DeviceDescriptor; decide?: (yes: boolean) => void; shown?: boolean; link?: Link; failed?: string } | undefined;
@@ -62,7 +116,7 @@ async function pairDevice(args: Record<string, unknown>): Promise<string> {
       code: code => { state.code = code; },
       safetyCode: sas => { state.sas = sas; },
       approve: peer => new Promise<boolean>(resolve => { state.peer = peer; state.decide = resolve; }),
-    }, { signal: AbortSignal.any([state.stop.signal, AbortSignal.timeout(PAIRING_CODE_TTL_MS)]) }).then(link => { state.link = link; },
+    }, { signal: AbortSignal.any([state.stop.signal, AbortSignal.timeout(PAIRING_CODE_TTL_MS)]), diskReceive: createDiskReceiver(path.resolve(PARTS_FOLDER)) }).then(link => { state.link = link; },
       error => { state.failed = error instanceof Error ? error.message : String(error); });
     await until(() => Boolean(state.code || state.failed), 20_000);
     if (!state.code) { pairing = undefined; state.stop.abort(); throw new Error(state.failed ?? "No code is available right now. Try again."); }
@@ -86,8 +140,8 @@ async function pairDevice(args: Record<string, unknown>): Promise<string> {
   await until(() => Boolean(current.link || current.failed), 60_000);
   pairing = undefined;
   if (!current.link) { current.stop.abort(); throw new Error(current.failed ?? "The device did not finish pairing in time. Call pair_device to start again."); }
-  current.link.close();
-  return `Paired with ${current.link.peer.name}. It now appears in list_devices; send_file, send_text, receive_files, the request tools and watch_frames work with it.`;
+  keep(current.link).close();
+  return `Paired with ${current.link.peer.name}. It now appears in list_devices; send_file, send_text, receive_files, the request tools and watch_frames work with it. The connection stays open for ${KEEP_OPEN_MS / 60_000} minutes after the last call, so the user need not reconnect for the next one.`;
 }
 
 export const TOOLS = [
@@ -135,14 +189,17 @@ let watch: { link: Link; id: string; folder: string; ended?: string; idle?: Retu
 /** Why the last watch ended, told on the next watch_frames call that has no purpose to ask again. */
 let lastWatchEnd: string | undefined;
 
-function endWatch(reason: string): void {
+/** Ends the watch; its connection stays, for the next tool. The promise is for the other device being told. */
+function endWatch(reason: string): Promise<void> {
   const current = watch;
-  if (!current) return;
+  if (!current) return Promise.resolve();
   watch = undefined;
   lastWatchEnd = reason;
   clearTimeout(current.idle);
   current.next?.(new Error(reason));
-  void current.link.session.stopWatch(current.id).finally(() => current.link.close());
+  const told = current.link.session.stopWatch(current.id).catch(() => {});
+  current.link.close();
+  return told;
 }
 
 async function startWatch(args: Record<string, unknown>, device: string | undefined): Promise<string | undefined> {
@@ -151,7 +208,7 @@ async function startWatch(args: Record<string, unknown>, device: string | undefi
   lastWatchEnd = undefined;
   const seconds = Math.min(RECEIVE_WAIT.max, Math.max(10, typeof args.wait_seconds === "number" ? args.wait_seconds : RECEIVE_WAIT.default));
   const folder = await insideFolder(args.folder, "inbox/watch");
-  const link = await openSaved(device, seconds, folder);
+  const link = await openSaved(device, seconds, true);
   let answer: "decline" | "watch" | undefined;
   let closed = false;
   const stills = new Set<string>();
@@ -168,7 +225,8 @@ async function startWatch(args: Record<string, unknown>, device: string | undefi
       accept: async offer => takeStill(offer),
       saved: file => { const next = current.next; current.next = undefined; next?.(file); },
       failed: (_name, message) => { const next = current.next; current.next = undefined; next?.(new Error(message)); },
-    });
+    }, path.resolve(PARTS_FOLDER));
+    offerHeld(link);
     current.id = await link.session.askFor("watch", purpose);
     notify(`Asked ${link.peer.name} to see the camera or the screen: "${purpose}". Waiting for the user there.`);
     const deadline = Date.now() + seconds * 1000;
@@ -235,7 +293,7 @@ async function requestFrom(kind: "photo" | "scan" | "file", args: Record<string,
   const seconds = Math.min(RECEIVE_WAIT.max, Math.max(10, typeof args.wait_seconds === "number" ? args.wait_seconds : RECEIVE_WAIT.default));
   const folder = await insideFolder(args.folder, "inbox");
   const deadline = Date.now() + seconds * 1000;
-  const link = await openSaved(device, seconds, folder);
+  const link = await openSaved(device, seconds, true);
   const saved: string[] = []; const failures: string[] = [];
   let expected = 0; let announced = 0; let pending = 0; let declined = false;
   // One answer counts, the one to this request. An answer can overtake askFor's return, so the first ones wait for the ID.
@@ -255,7 +313,8 @@ async function requestFrom(kind: "photo" | "scan" | "file", args: Record<string,
       accept: async () => { if (expected < 1) return false; expected--; pending++; return true; },
       saved: file => { pending = Math.max(0, pending - 1); saved.push(file); notify(`Saved ${file}`); },
       failed: (name, message) => { pending = Math.max(0, pending - 1); failures.push(`${name}: ${message}`); },
-    });
+    }, path.resolve(PARTS_FOLDER));
+    offerHeld(link);
     id = await link.session.askFor(kind, purpose);
     early.forEach(answerWith);
     notify(`Asked ${link.peer.name} for ${kind === "file" ? "a file" : `a ${kind}`}: "${purpose}". Waiting for the user there.`);
@@ -274,26 +333,28 @@ async function requestFrom(kind: "photo" | "scan" | "file", args: Record<string,
   return parts.join("\n\n");
 }
 
-async function openSaved(device: string | undefined, seconds: number, folder?: string): Promise<Link> {
-  // A message or a file to the device being watched goes over the watch's own connection, which stays open.
-  if (watch && !folder && (!device || device === watch.link.peer.name)) return { ...watch.link, close: () => {} };
-  if (watch) endWatch(`Stopped watching ${watch.link.peer.name} for this.`);
+async function openSaved(device: string | undefined, seconds: number, receiving = false): Promise<Link> {
+  // A message or a file to the device being watched goes over the watch's own connection, which stays in the watch's use.
+  if (watch && !receiving && (!device || device === watch.link.peer.name)) return { ...watch.link, close: () => {} };
+  if (watch) void endWatch(`Stopped watching ${watch.link.peer.name} for this.`);
   const identity = await loadOrCreateIdentity();
   const devices = await listDevices();
   const picked = pickDevice(devices, device);
   if (picked === "none") throw new Error(devices.length ? `No paired device is called "${device}".` : "No device is paired yet. Ask the user for the code paironce.com shows on their device, then call pair_device.");
   if (picked === "ambiguous") throw new Error(`Name the device: ${devices.map(item => item.name).join(", ")}.`);
+  if (kept && kept.link.isOpen() && kept.link.peer.id === picked.id) return inUse(kept);
+  closeKeptLink();
   notify(`Connecting to ${picked.name}. On that device, open https://paironce.com: it shows "${identity.name} wants to reconnect"; tap Connect.`);
-  return connect(identity, { kind: "saved", device: picked }, { status: log },
-    { signal: AbortSignal.timeout(seconds * 1000), ...(folder ? { diskReceive: createDiskReceiver(folder) } : {}) });
+  return keep(await connect(identity, { kind: "saved", device: picked }, { status: log },
+    { signal: AbortSignal.timeout(seconds * 1000), diskReceive: createDiskReceiver(path.resolve(PARTS_FOLDER)) }));
 }
 
 async function receiveFiles(args: Record<string, unknown>, device: string | undefined): Promise<string> {
   const seconds = Math.min(RECEIVE_WAIT.max, Math.max(10, typeof args.wait_seconds === "number" ? args.wait_seconds : RECEIVE_WAIT.default));
   const folder = await insideFolder(args.folder, "inbox");
   const deadline = Date.now() + seconds * 1000;
-  const link = await openSaved(device, seconds, folder);
-  const saved: string[] = []; const texts: string[] = []; const failures: string[] = [];
+  const link = await openSaved(device, seconds, true);
+  const saved: string[] = []; const texts: string[] = kept?.texts.splice(0) ?? []; const failures: string[] = [];
   let pending = 0; let lastActivity = Date.now();
   try {
     // The user chose these files on their own device and is sending them to this agent now: take them.
@@ -302,7 +363,8 @@ async function receiveFiles(args: Record<string, unknown>, device: string | unde
       saved: file => { pending = Math.max(0, pending - 1); saved.push(file); lastActivity = Date.now(); notify(`Saved ${file}`); },
       failed: (name, message) => { pending = Math.max(0, pending - 1); failures.push(`${name}: ${message}`); lastActivity = Date.now(); },
       text: text => { texts.push(text); lastActivity = Date.now(); },
-    });
+    }, path.resolve(PARTS_FOLDER));
+    offerHeld(link);
     notify(`Connected to ${link.peer.name} (${pathName(link)}). Waiting for files there (choose files to send) until ${new Date(deadline).toLocaleTimeString()}.`);
     let closed = false;
     link.events.closed = () => { closed = true; };
@@ -380,7 +442,7 @@ export async function answer(request: Request): Promise<object | undefined> {
 
 export function runMcp(): Promise<number> {
   const lines = createInterface({ input: process.stdin });
-  // One tool call at a time: each opens its own connection to a device.
+  // One tool call at a time, as they share one connection to a device.
   let queue = Promise.resolve();
   lines.on("line", line => {
     if (!line.trim()) return;
@@ -392,5 +454,5 @@ export function runMcp(): Promise<number> {
       if (response) process.stdout.write(`${JSON.stringify(response)}\n`);
     }).catch((error: unknown) => { log(`Could not answer a request: ${error instanceof Error ? error.message : String(error)}`); });
   });
-  return new Promise(resolve => lines.on("close", () => { void queue.then(() => { endWatch("The agent closed."); pairing?.stop.abort(); resolve(0); }); }));
+  return new Promise(resolve => lines.on("close", () => { void queue.then(async () => { await endWatch("The agent closed."); closeKeptLink(); pairing?.stop.abort(); resolve(0); }); }));
 }

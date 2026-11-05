@@ -4281,9 +4281,9 @@ async function saveDevice(device, now = Date.now()) {
 }
 async function forgetDevice(id) {
   const devices = await listDevices();
-  const rest = devices.filter((item) => item.id !== id);
-  if (rest.length === devices.length) return false;
-  await writePrivate(devicesFile(), rest);
+  const rest2 = devices.filter((item) => item.id !== id);
+  if (rest2.length === devices.length) return false;
+  await writePrivate(devicesFile(), rest2);
   return true;
 }
 function pickDevice(devices, query) {
@@ -4338,6 +4338,7 @@ async function connect(identity, target2, ui, options = {}) {
     let peer;
     let saving = Promise.resolve();
     let settled = false;
+    let ended = false;
     const fail = (error) => {
       if (settled) {
         events.error?.(error instanceof Error ? error.message : String(error));
@@ -4351,6 +4352,7 @@ async function connect(identity, target2, ui, options = {}) {
     const callbacks = {
       onStatus: (text) => {
         if (text === "Transfer channel closed") {
+          ended = true;
           if (settled) events.closed?.();
           else fail(new Error("The connection ended."));
           return;
@@ -4398,7 +4400,10 @@ async function connect(identity, target2, ui, options = {}) {
       onReady: (path7) => {
         if (settled) return;
         settled = true;
-        void saving.then(() => resolve({ session, peer: peer ?? { ...room.expected, pairedAt: Date.now(), lastSeenAt: Date.now() }, path: path7, events, close: () => session.close() }));
+        void saving.then(() => resolve({ session, peer: peer ?? { ...room.expected, pairedAt: Date.now(), lastSeenAt: Date.now() }, path: path7, events, close: () => {
+          ended = true;
+          session.close();
+        }, isOpen: () => !ended }));
       },
       onText: (text) => events.text?.(text),
       onRequestAnswer: (answer2) => events.requestAnswer?.(answer2),
@@ -4476,9 +4481,9 @@ function sinkFor(file, stream, name, mime) {
   };
 }
 function createDiskReceiver(folder) {
-  const kept = [];
+  const kept2 = [];
   const drop = async (index) => {
-    const [gone] = kept.splice(index, 1);
+    const [gone] = kept2.splice(index, 1);
     if (gone) await rm(partPath(folder, gone.partial.entry), { force: true });
   };
   return {
@@ -4507,19 +4512,19 @@ function createDiskReceiver(folder) {
         await sink.abort();
         return;
       }
-      for (let index = kept.length - 1; index >= 0; index--) if (Date.now() - kept[index].at > PARTIAL_KEEP_MS) await drop(index);
-      const same = kept.findIndex((item) => item.partial.peerId === partial.peerId && item.partial.resumeKey === partial.resumeKey);
-      if (same >= 0) kept.splice(same, 1);
-      kept.push({ partial, at: Date.now() });
-      while (kept.length > MAX_PARTIALS) await drop(0);
+      for (let index = kept2.length - 1; index >= 0; index--) if (Date.now() - kept2[index].at > PARTIAL_KEEP_MS) await drop(index);
+      const same = kept2.findIndex((item) => item.partial.peerId === partial.peerId && item.partial.resumeKey === partial.resumeKey);
+      if (same >= 0) kept2.splice(same, 1);
+      kept2.push({ partial, at: Date.now() });
+      while (kept2.length > MAX_PARTIALS) await drop(0);
     },
-    findPartial: (peerId, resumeKey) => kept.find((item) => item.partial.peerId === peerId && item.partial.resumeKey === resumeKey && Date.now() - item.at <= PARTIAL_KEEP_MS)?.partial,
+    findPartial: (peerId, resumeKey) => kept2.find((item) => item.partial.peerId === peerId && item.partial.resumeKey === resumeKey && Date.now() - item.at <= PARTIAL_KEEP_MS)?.partial,
     takePartial(partial) {
-      const index = kept.findIndex((item) => item.partial === partial);
-      if (index >= 0) kept.splice(index, 1);
+      const index = kept2.findIndex((item) => item.partial === partial);
+      if (index >= 0) kept2.splice(index, 1);
     },
     async discardPartial(partial) {
-      const index = kept.findIndex((item) => item.partial === partial);
+      const index = kept2.findIndex((item) => item.partial === partial);
       if (index >= 0) await drop(index);
       else await rm(partPath(folder, partial.entry), { force: true });
     }
@@ -4562,7 +4567,7 @@ async function insideFolder(value, fallback) {
   if (relative.startsWith("..") || path3.isAbsolute(relative)) throw new Error(refused);
   return path3.join(root, ...parts);
 }
-async function receiveInto(link, folder, handlers) {
+async function receiveInto(link, folder, handlers, partsFolder = folder) {
   await mkdir3(folder, { recursive: true });
   link.events.offer = (offer) => {
     void (async () => {
@@ -4573,7 +4578,7 @@ async function receiveInto(link, folder, handlers) {
     void (async () => {
       const target2 = await uniquePath(folder, file.name);
       try {
-        if (file.onDisk) await rename2(partPath(folder, file.diskEntry ?? file.transferId), target2);
+        if (file.onDisk) await rename2(partPath(partsFolder, file.diskEntry ?? file.transferId), target2);
         else await writeFile2(target2, new Uint8Array(await (file.blob ?? await (await fetch(file.url)).blob()).arrayBuffer()));
       } catch (error) {
         await rm2(target2, { force: true }).catch(() => {
@@ -4632,7 +4637,7 @@ async function sendPath(link, file, report = say) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.8.1";
+var CLI_VERSION = "0.9.0";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}
@@ -4644,7 +4649,64 @@ var notify = (text) => {
 };
 var target = { type: "string", description: "Name of a paired device (from list_devices). Optional when only one is paired." };
 var RECEIVE_WAIT = { default: 120, max: 600, quietAfterFile: 15 };
+var KEEP_OPEN_MS = 30 * 6e4;
+var HELD_MAX = 20;
+var PARTS_FOLDER = "inbox";
 var WATCH = { count: 5, interval: { default: 1, min: 0.5, max: 10 }, stillMs: 2e4, idle: 5 * 6e4, stillBytes: 8 * 1024 * 1024 };
+var kept;
+function closeKeptLink() {
+  const current = kept;
+  kept = void 0;
+  if (!current) return;
+  clearTimeout(current.idle);
+  current.link.close();
+}
+function rest(current) {
+  if (kept !== current) return;
+  const { link, offers, texts } = current;
+  if (!link.isOpen()) {
+    closeKeptLink();
+    return;
+  }
+  Object.assign(link.events, {
+    offer: (offer) => {
+      if (offers.length < HELD_MAX) offers.push(offer);
+      else void link.session.rejectFile(offer.transferId).catch(() => {
+      });
+    },
+    text: (text) => {
+      texts.push(text);
+      if (texts.length > HELD_MAX) texts.shift();
+    },
+    file: (file) => URL.revokeObjectURL(file.url),
+    closed: () => {
+      if (kept === current) closeKeptLink();
+    },
+    requestAnswer: void 0,
+    watchStillFile: void 0,
+    watchEnded: void 0,
+    receipt: void 0,
+    progress: void 0,
+    error: void 0
+  });
+  clearTimeout(current.idle);
+  current.idle = setTimeout(() => {
+    if (kept === current) closeKeptLink();
+  }, KEEP_OPEN_MS);
+  current.idle.unref?.();
+}
+function inUse(current) {
+  clearTimeout(current.idle);
+  return { ...current.link, close: () => rest(current) };
+}
+function keep(link) {
+  closeKeptLink();
+  kept = { link, offers: [], texts: [] };
+  return inUse(kept);
+}
+function offerHeld(link) {
+  for (const offer of kept?.offers.splice(0) ?? []) link.events.offer?.(offer);
+}
 var pairing;
 var until = async (ready, ms) => {
   for (const end = Date.now() + ms; !ready() && Date.now() < end; ) await new Promise((resolve) => setTimeout(resolve, 200));
@@ -4669,7 +4731,7 @@ async function pairDevice(args) {
         state.peer = peer;
         state.decide = resolve;
       })
-    }, { signal: AbortSignal.any([state.stop.signal, AbortSignal.timeout(PAIRING_CODE_TTL_MS)]) }).then(
+    }, { signal: AbortSignal.any([state.stop.signal, AbortSignal.timeout(PAIRING_CODE_TTL_MS)]), diskReceive: createDiskReceiver(path5.resolve(PARTS_FOLDER)) }).then(
       (link) => {
         state.link = link;
       },
@@ -4715,8 +4777,8 @@ async function pairDevice(args) {
     current.stop.abort();
     throw new Error(current.failed ?? "The device did not finish pairing in time. Call pair_device to start again.");
   }
-  current.link.close();
-  return `Paired with ${current.link.peer.name}. It now appears in list_devices; send_file, send_text, receive_files, the request tools and watch_frames work with it.`;
+  keep(current.link).close();
+  return `Paired with ${current.link.peer.name}. It now appears in list_devices; send_file, send_text, receive_files, the request tools and watch_frames work with it. The connection stays open for ${KEEP_OPEN_MS / 6e4} minutes after the last call, so the user need not reconnect for the next one.`;
 }
 var TOOLS = [
   {
@@ -4783,12 +4845,15 @@ var watch;
 var lastWatchEnd;
 function endWatch(reason) {
   const current = watch;
-  if (!current) return;
+  if (!current) return Promise.resolve();
   watch = void 0;
   lastWatchEnd = reason;
   clearTimeout(current.idle);
   current.next?.(new Error(reason));
-  void current.link.session.stopWatch(current.id).finally(() => current.link.close());
+  const told = current.link.session.stopWatch(current.id).catch(() => {
+  });
+  current.link.close();
+  return told;
 }
 async function startWatch(args, device) {
   const purpose = typeof args.purpose === "string" ? args.purpose.trim() : "";
@@ -4796,7 +4861,7 @@ async function startWatch(args, device) {
   lastWatchEnd = void 0;
   const seconds = Math.min(RECEIVE_WAIT.max, Math.max(10, typeof args.wait_seconds === "number" ? args.wait_seconds : RECEIVE_WAIT.default));
   const folder = await insideFolder(args.folder, "inbox/watch");
-  const link = await openSaved(device, seconds, folder);
+  const link = await openSaved(device, seconds, true);
   let answer2;
   let closed = false;
   const stills = /* @__PURE__ */ new Set();
@@ -4838,7 +4903,8 @@ async function startWatch(args, device) {
         current.next = void 0;
         next?.(new Error(message));
       }
-    });
+    }, path5.resolve(PARTS_FOLDER));
+    offerHeld(link);
     current.id = await link.session.askFor("watch", purpose);
     notify(`Asked ${link.peer.name} to see the camera or the screen: "${purpose}". Waiting for the user there.`);
     const deadline = Date.now() + seconds * 1e3;
@@ -4915,7 +4981,7 @@ async function requestFrom(kind, args, device) {
   const seconds = Math.min(RECEIVE_WAIT.max, Math.max(10, typeof args.wait_seconds === "number" ? args.wait_seconds : RECEIVE_WAIT.default));
   const folder = await insideFolder(args.folder, "inbox");
   const deadline = Date.now() + seconds * 1e3;
-  const link = await openSaved(device, seconds, folder);
+  const link = await openSaved(device, seconds, true);
   const saved = [];
   const failures = [];
   let expected = 0;
@@ -4958,7 +5024,8 @@ async function requestFrom(kind, args, device) {
         pending = Math.max(0, pending - 1);
         failures.push(`${name}: ${message}`);
       }
-    });
+    }, path5.resolve(PARTS_FOLDER));
+    offerHeld(link);
     id = await link.session.askFor(kind, purpose);
     early.forEach(answerWith);
     notify(`Asked ${link.peer.name} for ${kind === "file" ? "a file" : `a ${kind}`}: "${purpose}". Waiting for the user there.`);
@@ -4981,30 +5048,32 @@ ${saved.join("\n")}` : `${link.peer.name} accepted, but no file arrived within $
 ${failures.join("\n")}`);
   return parts.join("\n\n");
 }
-async function openSaved(device, seconds, folder) {
-  if (watch && !folder && (!device || device === watch.link.peer.name)) return { ...watch.link, close: () => {
+async function openSaved(device, seconds, receiving = false) {
+  if (watch && !receiving && (!device || device === watch.link.peer.name)) return { ...watch.link, close: () => {
   } };
-  if (watch) endWatch(`Stopped watching ${watch.link.peer.name} for this.`);
+  if (watch) void endWatch(`Stopped watching ${watch.link.peer.name} for this.`);
   const identity = await loadOrCreateIdentity();
   const devices = await listDevices();
   const picked = pickDevice(devices, device);
   if (picked === "none") throw new Error(devices.length ? `No paired device is called "${device}".` : "No device is paired yet. Ask the user for the code paironce.com shows on their device, then call pair_device.");
   if (picked === "ambiguous") throw new Error(`Name the device: ${devices.map((item) => item.name).join(", ")}.`);
+  if (kept && kept.link.isOpen() && kept.link.peer.id === picked.id) return inUse(kept);
+  closeKeptLink();
   notify(`Connecting to ${picked.name}. On that device, open https://paironce.com: it shows "${identity.name} wants to reconnect"; tap Connect.`);
-  return connect(
+  return keep(await connect(
     identity,
     { kind: "saved", device: picked },
     { status: log },
-    { signal: AbortSignal.timeout(seconds * 1e3), ...folder ? { diskReceive: createDiskReceiver(folder) } : {} }
-  );
+    { signal: AbortSignal.timeout(seconds * 1e3), diskReceive: createDiskReceiver(path5.resolve(PARTS_FOLDER)) }
+  ));
 }
 async function receiveFiles(args, device) {
   const seconds = Math.min(RECEIVE_WAIT.max, Math.max(10, typeof args.wait_seconds === "number" ? args.wait_seconds : RECEIVE_WAIT.default));
   const folder = await insideFolder(args.folder, "inbox");
   const deadline = Date.now() + seconds * 1e3;
-  const link = await openSaved(device, seconds, folder);
+  const link = await openSaved(device, seconds, true);
   const saved = [];
-  const texts = [];
+  const texts = kept?.texts.splice(0) ?? [];
   const failures = [];
   let pending = 0;
   let lastActivity = Date.now();
@@ -5030,7 +5099,8 @@ async function receiveFiles(args, device) {
         texts.push(text);
         lastActivity = Date.now();
       }
-    });
+    }, path5.resolve(PARTS_FOLDER));
+    offerHeld(link);
     notify(`Connected to ${link.peer.name} (${pathName(link)}). Waiting for files there (choose files to send) until ${new Date(deadline).toLocaleTimeString()}.`);
     let closed = false;
     link.events.closed = () => {
@@ -5144,8 +5214,9 @@ function runMcp() {
     });
   });
   return new Promise((resolve) => lines.on("close", () => {
-    void queue.then(() => {
-      endWatch("The agent closed.");
+    void queue.then(async () => {
+      await endWatch("The agent closed.");
+      closeKeptLink();
       pairing?.stop.abort();
       resolve(0);
     });
@@ -5155,23 +5226,23 @@ function runMcp() {
 // src/cli.ts
 function parse(argv) {
   const flags = {};
-  const rest = [];
+  const rest2 = [];
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index];
     if (arg === "--") {
-      rest.push(...argv.slice(index + 1));
+      rest2.push(...argv.slice(index + 1));
       break;
     }
     const match = /^--([a-z-]+)(?:=(.*))?$/.exec(arg);
     if (!match) {
-      rest.push(arg);
+      rest2.push(arg);
       continue;
     }
     if (match[2] !== void 0) flags[match[1]] = match[2];
     else if (["to", "from", "name"].includes(match[1]) && argv[index + 1] && !argv[index + 1].startsWith("--")) flags[match[1]] = argv[++index];
     else flags[match[1]] = true;
   }
-  return { flags, rest };
+  return { flags, rest: rest2 };
 }
 async function ask(question) {
   if (!process.stdin.isTTY) return false;
@@ -5252,8 +5323,8 @@ function relaunchedForProxy() {
 async function main(argv) {
   const relaunched = relaunchedForProxy();
   if (relaunched) return relaunched;
-  const { flags, rest } = parse(argv);
-  const [command, ...args] = rest;
+  const { flags, rest: rest2 } = parse(argv);
+  const [command, ...args] = rest2;
   if (flags.version) {
     process.stdout.write(`${CLI_VERSION}
 `);

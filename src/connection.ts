@@ -41,7 +41,7 @@ export interface LinkEvents {
   closed?(): void;
 }
 
-export interface Link { session: PeerSession; peer: PairedDevice; path: DeliveryPath; events: LinkEvents; close(): void }
+export interface Link { session: PeerSession; peer: PairedDevice; path: DeliveryPath; events: LinkEvents; close(): void; isOpen(): boolean }
 
 export type Target = { kind: "host" } | { kind: "join"; code: string } | { kind: "saved"; device: PairedDevice };
 
@@ -91,6 +91,7 @@ export async function connect(identity: DeviceIdentity, target: Target, ui: Conn
     let peer: PairedDevice | undefined;
     let saving: Promise<void> = Promise.resolve();
     let settled = false;
+    let ended = false;
     const fail = (error: unknown) => {
       if (settled) { events.error?.(error instanceof Error ? error.message : String(error)); return; }
       settled = true;
@@ -102,7 +103,7 @@ export async function connect(identity: DeviceIdentity, target: Target, ui: Conn
       : "Nobody connected in time. Try again.")), { once: true });
     const callbacks: SessionCallbacks = {
       onStatus: text => {
-        if (text === "Transfer channel closed") { if (settled) events.closed?.(); else fail(new Error("The connection ended.")); return; }
+        if (text === "Transfer channel closed") { ended = true; if (settled) events.closed?.(); else fail(new Error("The connection ended.")); return; }
         ui.status?.(text);
       },
       onConnectionCode: code => ui.code?.(code),
@@ -134,7 +135,7 @@ export async function connect(identity: DeviceIdentity, target: Target, ui: Conn
       onReady: path => {
         if (settled) return;
         settled = true;
-        void saving.then(() => resolve({ session, peer: peer ?? { ...(room.expected as DeviceDescriptor), pairedAt: Date.now(), lastSeenAt: Date.now() }, path, events, close: () => session.close() }));
+        void saving.then(() => resolve({ session, peer: peer ?? { ...(room.expected as DeviceDescriptor), pairedAt: Date.now(), lastSeenAt: Date.now() }, path, events, close: () => { ended = true; session.close(); }, isOpen: () => !ended }));
       },
       onText: text => events.text?.(text),
       onRequestAnswer: answer => events.requestAnswer?.(answer),

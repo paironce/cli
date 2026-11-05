@@ -10,7 +10,7 @@ vi.mock("./connection", () => ({ connect: async (...args: any[]) => { links.conn
 const fakeLink = (session: Record<string, unknown>): any => ({
   session: { peerTakesRequests: () => true, peerTakesWatch: () => true, acceptFile: vi.fn(async () => {}), rejectFile: vi.fn(async () => {}),
     confirmFileSaved: vi.fn(async () => {}), withdrawRequest: vi.fn(async () => {}), stopWatch: vi.fn(async () => {}), ...session },
-  peer: { id: "p".repeat(20), name: "Phone", publicKey: "k".repeat(87), pairedAt: 1, lastSeenAt: 1 }, path: "direct", events: {} as any, close: vi.fn(),
+  peer: { id: "p".repeat(20), name: "Phone", publicKey: "k".repeat(87), pairedAt: 1, lastSeenAt: 1 }, path: "direct", events: {} as any, close: vi.fn(), isOpen: () => true,
 });
 const received = (name: string, bytes: Uint8Array, transferId = `t-${name}-aaaaaaaaaaaaaaaa`) => ({ transferId, name, size: bytes.length, url: "", mime: "image/jpeg", blob: new Blob([bytes.slice()]) });
 const JPEG = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
@@ -18,6 +18,7 @@ const pause = (ms = 150) => new Promise(resolve => setTimeout(resolve, ms));
 
 let cwd: string;
 beforeEach(async () => {
+  (await import("./mcp")).closeKeptLink();
   process.env.PAIRONCE_HOME = mkdtempSync(path.join(tmpdir(), "paironce-test-"));
   const { saveDevice } = await import("./store");
   await saveDevice({ id: "p".repeat(20), name: "Phone", publicKey: "k".repeat(87) });
@@ -105,6 +106,7 @@ describe("a watch takes one JPEG for each still it asked for", () => {
     await callTool("watch_stop", {});
     await running;
 
+    (await import("./mcp")).closeKeptLink();
     const next = await watching(() => callTool("watch_frames", { purpose: "see it", count: 1 }));
     next.link.events.watchStillFile(WATCH, "still-fake-aaaaaaaaaaaaaaa");
     next.link.events.offer({ transferId: "still-fake-aaaaaaaaaaaaaaa", name: "fake.jpg", size: 10, mime: "image/jpeg" });
@@ -142,7 +144,13 @@ describe("pair_device shows a code; it never takes one", () => {
     expect(approved).toBeUndefined();
     expect(await callTool("pair_device", { confirm: true })).toContain("Paired with Phone");
     expect(approved).toBe(true);
-    expect(link.close).toHaveBeenCalled();
+    // The person just paired on their device: the next tool goes on over this connection, with no tap there.
+    expect(link.close).not.toHaveBeenCalled();
+    Object.assign(link.session, { sendText: vi.fn(async () => {}), drained: vi.fn(async () => {}) });
+    links.connects.length = 0;
+    expect(await callTool("send_text", { text: "hello" })).toContain("Sent to Phone");
+    expect(link.session.sendText).toHaveBeenCalledWith("hello");
+    expect(links.connects).toHaveLength(0);
   }, 20000);
 
   it("refuses the device when the user says the codes differ, and needs something to confirm", async () => {
@@ -160,6 +168,94 @@ describe("pair_device shows a code; it never takes one", () => {
     expect(await callTool("pair_device", { confirm: false })).toContain("refused");
     expect(approved).toBe(false);
   }, 20000);
+});
+
+describe("the connection between tool calls", () => {
+  const sending = () => fakeLink({ sendText: vi.fn(async () => {}), drained: vi.fn(async () => {}), usesTunnel: () => false });
+
+  it("stays open, so a second tool connects to nothing", async () => {
+    const { callTool } = await import("./mcp");
+    const link = sending();
+    links.current = link;
+    await callTool("send_text", { text: "one" });
+    await callTool("send_text", { text: "two" });
+    expect(links.connects).toHaveLength(1);
+    expect(link.close).not.toHaveBeenCalled();
+    expect(link.session.sendText).toHaveBeenCalledTimes(2);
+  });
+
+  it("closes some time after the last tool, and a tool in between starts that time again", async () => {
+    const { callTool, KEEP_OPEN_MS } = await import("./mcp");
+    const link = sending();
+    links.current = link;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await callTool("send_text", { text: "one" });
+      vi.advanceTimersByTime(KEEP_OPEN_MS - 1000);
+      await callTool("send_text", { text: "two" });
+      vi.advanceTimersByTime(KEEP_OPEN_MS - 1000);
+      expect(link.close).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(2000);
+      expect(link.close).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+    await callTool("send_text", { text: "three" });
+    expect(links.connects).toHaveLength(2);
+  });
+
+  it("connects again when the person ended it", async () => {
+    const { callTool } = await import("./mcp");
+    const first = sending(); let open = true;
+    first.isOpen = () => open;
+    links.current = first;
+    await callTool("send_text", { text: "one" });
+    open = false;
+    first.events.closed();
+    const second = sending();
+    links.current = second;
+    await callTool("send_text", { text: "two" });
+    expect(links.connects).toHaveLength(2);
+    expect(second.session.sendText).toHaveBeenCalledWith("two");
+  });
+
+  it("is replaced for another device", async () => {
+    const { callTool } = await import("./mcp");
+    const { saveDevice } = await import("./store");
+    await saveDevice({ id: "q".repeat(20), name: "Tablet", publicKey: "m".repeat(87) });
+    const first = sending();
+    links.current = first;
+    await callTool("send_text", { text: "one", device: "Phone" });
+    const second = sending();
+    second.peer = { ...second.peer, id: "q".repeat(20), name: "Tablet" };
+    links.current = second;
+    await callTool("send_text", { text: "two", device: "Tablet" });
+    expect(first.close).toHaveBeenCalledOnce();
+    expect(links.connects).toHaveLength(2);
+  });
+
+  it("takes nothing unasked: what the person sends meanwhile waits for receive_files, and a request declines it", async () => {
+    const { callTool } = await import("./mcp");
+    const link = sending();
+    Object.assign(link.session, { askFor: vi.fn(async () => "the-real-request-id-000") });
+    links.current = link;
+    await callTool("send_text", { text: "one" });
+    link.events.offer({ transferId: "offer-held-aaaaaaaaaaaaaa", name: "held.jpg", size: 7, mime: "image/jpeg" });
+    link.events.text("a note from the phone");
+    expect(link.session.acceptFile).not.toHaveBeenCalled();
+    expect(link.session.rejectFile).not.toHaveBeenCalled();
+    const call = callTool("receive_files", { wait_seconds: 10 });
+    await vi.waitFor(() => expect(link.session.acceptFile).toHaveBeenCalledWith("offer-held-aaaaaaaaaaaaaa"), { timeout: 5000 });
+    link.events.file(received("held.jpg", JPEG, "offer-held-aaaaaaaaaaaaaa"));
+    const reply = await call;
+    expect(reply).toContain("held.jpg");
+    expect(reply).toContain("a note from the phone");
+    link.events.offer({ transferId: "offer-late-aaaaaaaaaaaaaa", name: "late.txt", size: 3, mime: "text/plain" });
+    const asked = callTool("request_file", { purpose: "invoice", wait_seconds: 10 });
+    await vi.waitFor(() => expect(link.session.rejectFile).toHaveBeenCalledWith("offer-late-aaaaaaaaaaaaaa"), { timeout: 5000 });
+    await vi.waitFor(() => expect(link.session.askFor).toHaveBeenCalled(), { timeout: 5000 });
+    await pause(20);
+    link.events.requestAnswer({ id: "the-real-request-id-000", decision: "decline" });
+    expect(await asked).toContain("declined");
+  }, 30000);
 });
 
 describe("where an MCP tool saves", () => {
