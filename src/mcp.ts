@@ -51,6 +51,13 @@ export const WATCH = { count: 5, interval: { default: 1, min: 0.5, max: 10 }, st
 
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 
+/**
+ * One disk receiver for this server: it knows the parts a dropped connection left, so a file the other device sends again
+ * goes on where it stopped, also over a new connection.
+ */
+let receiver: ReturnType<typeof createDiskReceiver> | undefined;
+const partsReceiver = () => receiver ??= createDiskReceiver(path.resolve(PARTS_FOLDER));
+
 /** The connection kept open between tool calls. One at a time: a tool for another device replaces it. */
 let kept: { link: Link; idle?: ReturnType<typeof setTimeout>; offers: FileOffer[]; texts: string[] } | undefined;
 
@@ -116,7 +123,7 @@ async function pairDevice(args: Record<string, unknown>): Promise<string> {
       code: code => { state.code = code; },
       safetyCode: sas => { state.sas = sas; },
       approve: peer => new Promise<boolean>(resolve => { state.peer = peer; state.decide = resolve; }),
-    }, { signal: AbortSignal.any([state.stop.signal, AbortSignal.timeout(PAIRING_CODE_TTL_MS)]), diskReceive: createDiskReceiver(path.resolve(PARTS_FOLDER)) }).then(link => { state.link = link; },
+    }, { signal: AbortSignal.any([state.stop.signal, AbortSignal.timeout(PAIRING_CODE_TTL_MS)]), diskReceive: partsReceiver() }).then(link => { state.link = link; },
       error => { state.failed = error instanceof Error ? error.message : String(error); });
     await until(() => Boolean(state.code || state.failed), 20_000);
     if (!state.code) { pairing = undefined; state.stop.abort(); throw new Error(state.failed ?? "No code is available right now. Try again."); }
@@ -346,7 +353,7 @@ async function openSaved(device: string | undefined, seconds: number, receiving 
   closeKeptLink();
   notify(`Connecting to ${picked.name}. On that device, open https://paironce.com: it shows "${identity.name} wants to reconnect"; tap Connect.`);
   return keep(await connect(identity, { kind: "saved", device: picked }, { status: log },
-    { signal: AbortSignal.timeout(seconds * 1000), diskReceive: createDiskReceiver(path.resolve(PARTS_FOLDER)) }));
+    { signal: AbortSignal.timeout(seconds * 1000), diskReceive: partsReceiver() }));
 }
 
 async function receiveFiles(args: Record<string, unknown>, device: string | undefined): Promise<string> {

@@ -5,12 +5,12 @@
   "description": "Send files and text between an AI agent and your own paired devices, end-to-end encrypted.",
   "websiteUrl": "https://paironce.com",
   "repository": { "url": "https://github.com/paironce/cli", "source": "github" },
-  "version": "0.9.0",
+  "version": "0.9.1",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "paironce",
-      "version": "0.9.0",
+      "version": "0.9.1",
       "transport": { "type": "stdio" },
       "packageArguments": [{ "type": "positional", "value": "mcp" }]
     }

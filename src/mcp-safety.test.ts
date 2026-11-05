@@ -1,5 +1,5 @@
 // What an agent takes from a paired device, and how it pairs: only what it asked for, and never by a code from elsewhere.
-import { mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -319,6 +319,30 @@ describe("saving what arrives", () => {
       expect(path.dirname(file)).toBe(cwd);
       expect(path.basename(file)).not.toMatch(/[\u0000-\u001f‮]/);
     }
+  });
+});
+
+describe("the store shared by several processes", () => {
+  it("keeps every device saved at once, and one identity", async () => {
+    const { listDevices, loadOrCreateIdentity, saveDevice } = await import("./store");
+    process.env.PAIRONCE_HOME = mkdtempSync(path.join(tmpdir(), "paironce-store-"));
+    const identities = await Promise.all(Array.from({ length: 6 }, () => loadOrCreateIdentity()));
+    expect(new Set(identities.map(item => item.id)).size).toBe(1);
+    await Promise.all(Array.from({ length: 8 }, (_, n) => saveDevice({ id: `device-${n}`.padEnd(20, "x"), name: `Device ${n}`, publicKey: "k".repeat(87) })));
+    expect((await listDevices()).length).toBe(8);
+  }, 20000);
+});
+
+describe("parts left on disk", () => {
+  it("go when they can no longer be continued", async () => {
+    const { removeOldParts } = await import("./disk");
+    const { partPath } = await import("./disk");
+    writeFileSync(partPath(cwd, "old"), "x");
+    writeFileSync(path.join(cwd, "keep.txt"), "x");
+    await removeOldParts(cwd);
+    expect(readdirSync(cwd).sort()).toEqual([".paironce-old.part", "keep.txt"]);
+    await removeOldParts(cwd, Date.now() + 365 * 86_400_000);
+    expect(readdirSync(cwd)).toEqual(["keep.txt"]);
   });
 });
 

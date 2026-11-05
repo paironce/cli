@@ -4,7 +4,7 @@
  * a terminal receives files as large as the sender may send and continues a cut-off one like a browser does.
  */
 import { createWriteStream, openAsBlob, type WriteStream } from "node:fs";
-import { mkdir, rm, stat, statfs, truncate } from "node:fs/promises";
+import { mkdir, readdir, rm, stat, statfs, truncate } from "node:fs/promises";
 import path from "node:path";
 import type { DiskReceiver, DiskSink, PartialFile } from "../../../apps/app/src/session";
 import { DISK_THRESHOLD_BYTES, MAX_PARTIALS, PARTIAL_KEEP_MS } from "../../../apps/app/src/realtime/disk-receive";
@@ -27,8 +27,20 @@ function sinkFor(file: string, stream: WriteStream, name: string, mime: string):
   };
 }
 
+/** Parts a process that ended left behind, past the time they could be continued. */
+export async function removeOldParts(folder: string, now = Date.now()): Promise<void> {
+  const names = await readdir(folder).catch(() => [] as string[]);
+  for (const name of names) {
+    if (!/^\.paironce-[A-Za-z0-9_-]+\.part$/.test(name)) continue;
+    const file = path.join(folder, name);
+    const info = await stat(file).catch(() => undefined);
+    if (info && now - info.mtimeMs > PARTIAL_KEEP_MS) await rm(file, { force: true }).catch(() => {});
+  }
+}
+
 export function createDiskReceiver(folder: string): DiskReceiver {
   const kept: { partial: PartialFile; at: number }[] = [];
+  let tidied = false;
   const drop = async (index: number) => {
     const [gone] = kept.splice(index, 1);
     if (gone) await rm(partPath(folder, gone.partial.entry), { force: true });
@@ -37,6 +49,7 @@ export function createDiskReceiver(folder: string): DiskReceiver {
     threshold: DISK_THRESHOLD_BYTES,
     async available() {
       await mkdir(folder, { recursive: true });
+      if (!tidied) { tidied = true; await removeOldParts(folder); }
       const disk = await statfs(folder);
       return Math.max(0, disk.bavail * disk.bsize - RESERVE_BYTES);
     },
