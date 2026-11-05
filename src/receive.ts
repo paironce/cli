@@ -1,5 +1,5 @@
 /** Saving what arrives on an open link into a folder, shared by `paironce receive` and the MCP `receive_files` tool. */
-import { mkdir, open, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, open, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { FileOffer, ReceivedFile } from "../../../apps/app/src/session";
 import type { Link } from "./connection";
@@ -43,6 +43,49 @@ export async function insideFolder(value: unknown, fallback: string): Promise<st
   return path.join(root, ...parts);
 }
 
+/**
+ * Which folder each accepted file goes to: the one the accepting call named, also when the file arrives after that call
+ * stopped waiting or during the next one (CLI 0.11.0). Per connection.
+ */
+const accepted = new WeakMap<object, Map<string, string>>();
+function acceptedOn(link: Link): Map<string, string> {
+  let folders = accepted.get(link.session);
+  if (!folders) accepted.set(link.session, folders = new Map());
+  return folders;
+}
+
+/** Files this connection accepted that have not arrived yet. */
+export const stillArriving = (link: Link) => acceptedOn(link).size;
+
+/** Whether this file was accepted, and so has somewhere to go. */
+export const wasAccepted = (link: Link, file: ReceivedFile) => acceptedOn(link).has(file.transferId);
+
+/** Moves a finished file, also to a folder on another disk (CLI 0.11.0, R14). */
+export async function moveFile(from: string, to: string, renameFile = rename): Promise<void> {
+  try { await renameFile(from, to); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+    await copyFile(from, to);
+    await rm(from, { force: true });
+  }
+}
+
+/** Saves what arrived into the folder it was accepted for (`folder` when it has none), and tells the other device. */
+export async function saveArrived(link: Link, file: ReceivedFile, folder: string, partsFolder: string): Promise<string> {
+  const folders = acceptedOn(link);
+  const into = folders.get(file.transferId) ?? folder;
+  folders.delete(file.transferId);
+  await mkdir(into, { recursive: true });
+  const target = await uniquePath(into, file.name);
+  try {
+    if (file.onDisk) await moveFile(partPath(partsFolder, file.diskEntry ?? file.transferId), target);
+    else await writeFile(target, new Uint8Array(await (file.blob ?? await (await fetch(file.url)).blob()).arrayBuffer()));
+  } catch (error) { await rm(target, { force: true }).catch(() => {}); throw error; }
+  finally { URL.revokeObjectURL(file.url); }
+  await link.session.confirmFileSaved(file.transferId).catch(() => {});
+  return target;
+}
+
 export interface ReceiveHandlers {
   /** Whether to take an offered file. */
   accept(offer: FileOffer): Promise<boolean>;
@@ -59,20 +102,14 @@ export async function receiveInto(link: Link, folder: string, handlers: ReceiveH
   await mkdir(folder, { recursive: true });
   link.events.offer = offer => {
     void (async () => {
-      await ((await handlers.accept(offer)) ? link.session.acceptFile(offer.transferId) : link.session.rejectFile(offer.transferId));
+      if (!await handlers.accept(offer)) { await link.session.rejectFile(offer.transferId); return; }
+      acceptedOn(link).set(offer.transferId, folder);
+      await link.session.acceptFile(offer.transferId);
     })().catch(error => handlers.failed?.(offer.name, error instanceof Error ? error.message : String(error)));
   };
   link.events.file = (file: ReceivedFile) => {
-    void (async () => {
-      const target = await uniquePath(folder, file.name);
-      try {
-        if (file.onDisk) await rename(partPath(partsFolder, file.diskEntry ?? file.transferId), target);
-        else await writeFile(target, new Uint8Array(await (file.blob ?? await (await fetch(file.url)).blob()).arrayBuffer()));
-      } catch (error) { await rm(target, { force: true }).catch(() => {}); throw error; }
-      finally { URL.revokeObjectURL(file.url); }
-      await link.session.confirmFileSaved(file.transferId).catch(() => {});
-      handlers.saved?.(target);
-    })().catch(error => handlers.failed?.(file.name, error instanceof Error ? error.message : String(error)));
+    void saveArrived(link, file, folder, partsFolder).then(target => handlers.saved?.(target))
+      .catch(error => handlers.failed?.(file.name, error instanceof Error ? error.message : String(error)));
   };
   if (handlers.text) link.events.text = handlers.text;
 }

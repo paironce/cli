@@ -36,6 +36,24 @@ async function writePrivate(file: string, value: unknown): Promise<void> {
  * One process at a time reads, changes and writes this folder's files: a person's terminal and an agent can share it, and
  * two at once would lose a saved device or make two identities. A lock left by a process that ended goes after a while.
  */
+/**
+ * Removes a lock nobody holds any more. One process at a time, and it looks again first: two that both saw it stale would
+ * otherwise have the second remove the lock the first just made (CLI 0.11.0, R14).
+ */
+async function clearStaleLock(lock: string): Promise<void> {
+  const claim = `${lock}.takeover`;
+  const stale = (file: string) => stat(file).then(info => Date.now() - info.mtimeMs > LOCK_STALE_MS, () => false);
+  try { await (await open(claim, "wx", 0o600)).close(); }
+  catch {
+    // Someone else is at it, or left this behind when it ended.
+    if (await stale(claim)) await rm(claim, { force: true });
+    await new Promise(resolve => setTimeout(resolve, 20 + Math.random() * 60));
+    return;
+  }
+  try { if (await stale(lock)) await rm(lock, { force: true }); }
+  finally { await rm(claim, { force: true }); }
+}
+
 async function locked<T>(work: () => Promise<T>): Promise<T> {
   const lock = path.join(path.dirname(identityFile()), "store.lock");
   await mkdir(path.dirname(lock), { recursive: true, mode: 0o700 });
@@ -44,7 +62,7 @@ async function locked<T>(work: () => Promise<T>): Promise<T> {
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST" && (error as NodeJS.ErrnoException).code !== "EPERM") throw error;
       const age = await stat(lock).then(info => Date.now() - info.mtimeMs, () => 0);
-      if (age > LOCK_STALE_MS) { await rm(lock, { force: true }); continue; }
+      if (age > LOCK_STALE_MS) { await clearStaleLock(lock); continue; }
       if (Date.now() > end) throw new Error(`Another PairOnce process is holding ${lock}.`);
       await new Promise(resolve => setTimeout(resolve, 20 + Math.random() * 60));
     }

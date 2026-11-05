@@ -48,6 +48,9 @@ function validPartial(value: unknown): value is PartialFile {
 
 export function createDiskReceiver(folder: string): DiskReceiver & { restore(): Promise<void>; settled(): Promise<void> } {
   const kept: { partial: PartialFile; at: number }[] = [];
+  // Parts found on disk: another process may have found them too, so taking one means winning its note (CLI 0.11.0, B03).
+  const restored = new Set<string>();
+  const lost = new Set<string>();
   let keeping: Promise<unknown> = Promise.resolve();
   let tidied = false;
   const forgetNote = (entry: string) => rm(notePath(folder, entry), { force: true }).catch(() => {});
@@ -70,6 +73,7 @@ export function createDiskReceiver(folder: string): DiskReceiver & { restore(): 
         const size = await stat(partPath(folder, note.partial.entry)).then(info => info.size, () => -1);
         if (size < note.partial.next * note.partial.chunkSize) continue;
         kept.push({ partial: note.partial, at: note.at });
+        restored.add(note.partial.entry);
       }
     },
     threshold: DISK_THRESHOLD_BYTES,
@@ -82,6 +86,12 @@ export function createDiskReceiver(folder: string): DiskReceiver & { restore(): 
     async open(entry, name, mime, offset = 0) {
       await mkdir(folder, { recursive: true });
       const file = partPath(folder, entry);
+      if (offset > 0 && restored.delete(entry)) {
+        const note = notePath(folder, entry);
+        const claim = `${note}.${process.pid}.${Date.now()}`;
+        try { await rename(note, claim); await rm(claim, { force: true }); }
+        catch { lost.add(entry); throw new Error("disk_partial_taken"); }
+      }
       if (offset > 0) {
         if ((await stat(file)).size < offset) throw new Error("disk_partial_short");
         await truncate(file, offset);
@@ -112,9 +122,12 @@ export function createDiskReceiver(folder: string): DiskReceiver & { restore(): 
     takePartial(partial) {
       const index = kept.findIndex(item => item.partial === partial);
       if (index >= 0) kept.splice(index, 1);
-      void forgetNote(partial.entry);
+      // A restored part's note stays until it is opened: that is where another process and this one find out who has it.
+      if (!restored.has(partial.entry)) void forgetNote(partial.entry);
     },
     async discardPartial(partial) {
+      // Another process is writing it.
+      if (lost.delete(partial.entry)) return;
       const index = kept.findIndex(item => item.partial === partial);
       if (index >= 0) await drop(index);
       else { await rm(partPath(folder, partial.entry), { force: true }); await forgetNote(partial.entry); }

@@ -14,7 +14,7 @@
  */
 import "./env";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import path from "node:path";
@@ -145,7 +145,9 @@ async function main(argv: string[]): Promise<number> {
     if (!process.env.PAIRONCE_FORGET_AFTER) process.env.PAIRONCE_FORGET_AFTER = String(EPHEMERAL_FORGET_AFTER);
     // A folder of its own, also under a set PAIRONCE_HOME (an empty variable counts as unset, as store.ts reads it): nothing
     // from a long-lived identity is used, and its private key does not outlive this run.
-    const folder = mkdtempSync(path.join(process.env.PAIRONCE_HOME || tmpdir(), "paironce-"));
+    const base = process.env.PAIRONCE_HOME || tmpdir();
+    mkdirSync(base, { recursive: true });
+    const folder = mkdtempSync(path.join(base, "paironce-"));
     process.env.PAIRONCE_HOME = folder;
     process.on("exit", () => { try { rmSync(folder, { recursive: true, force: true }); } catch { /* The system's temporary folder is cleared in time. */ } });
     for (const signal of ["SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(1));
