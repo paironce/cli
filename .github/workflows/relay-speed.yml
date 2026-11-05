@@ -1,0 +1,21 @@
+# How fast the relay carries a file from a machine with a clean network. By hand only.
+name: Relay speed check
+on:
+  workflow_dispatch:
+    inputs:
+      size_mib:
+        description: File size in MiB, within the free allowance
+        default: "150"
+permissions:
+  contents: read
+jobs:
+  speed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - run: npm install --no-save --no-package-lock --ignore-scripts playwright@1.57.0
+      - run: SIZE_MIB=${{ inputs.size_mib }} node .github/tools/relay-speed.mjs
