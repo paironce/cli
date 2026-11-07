@@ -1,4 +1,4 @@
-# How fast each relay path carries a file from a machine with a clean network. By hand only.
+# How fast each relay path carries a file from a machine with a clean network, with added delay if asked. By hand only.
 name: Relay path speed
 on:
   workflow_dispatch:
@@ -9,12 +9,15 @@ on:
       sizes:
         description: File sizes in MiB, within the free allowance
         default: "1,16"
+      delays:
+        description: Milliseconds added to each packet leaving the machine, space separated
+        default: "0"
 permissions:
   contents: read
 jobs:
   speed:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -22,4 +25,15 @@ jobs:
           node-version: 24
       - run: npm install --no-save --no-package-lock --ignore-scripts playwright@1.57.0
       - run: npx playwright install --with-deps chromium
-      - run: PATHS=${{ inputs.paths }} SIZES=${{ inputs.sizes }} node .github/tools/relay-path-speed.mjs
+      - env:
+          PATHS: ${{ inputs.paths }}
+          SIZES: ${{ inputs.sizes }}
+          DELAYS: ${{ inputs.delays }}
+        run: |
+          device=$(ip route | awk '/default/{print $5; exit}')
+          for delay in $DELAYS; do
+            echo "delay $delay ms"
+            sudo tc qdisc del dev "$device" root 2>/dev/null || true
+            if [ "$delay" != "0" ]; then sudo tc qdisc add dev "$device" root netem delay "${delay}ms"; fi
+            LIMIT_SECONDS=150 node .github/tools/relay-path-speed.mjs
+          done
