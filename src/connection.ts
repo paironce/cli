@@ -30,6 +30,8 @@ export interface LinkEvents {
   file?(file: ReceivedFile): void;
   /** A file that was accepted ended before it all arrived. */
   fileClosed?(transferId: string, name?: string): void;
+  /** An offer ended before anyone decided on it, for example because it expired. */
+  offerClosed?(transferId: string): void;
   receipt?(receipt: FileReceipt): void;
   progress?(name: string, fraction: number, direction?: "sent" | "received"): void;
   text?(text: string): void;
@@ -145,6 +147,7 @@ export async function connect(identity: DeviceIdentity, target: Target, ui: Conn
       onWatchEnded: id => events.watchEnded?.(id),
       onFile: file => events.file?.(file),
       onIncomingFileClosed: (transferId, name) => events.fileClosed?.(transferId, name),
+      onFileOfferClosed: transferId => events.offerClosed?.(transferId),
       onFileOffer: offer => events.offer?.(offer),
       onFileReceipt: receipt => events.receipt?.(receipt),
       onProgress: (label, fraction, direction) => events.progress?.(label, fraction, direction),

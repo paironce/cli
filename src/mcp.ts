@@ -89,6 +89,8 @@ function rest(current: NonNullable<typeof kept>): void {
         error => { notSaved.push(`${file.name}: ${error instanceof Error ? error.message : String(error)}`); });
     },
     fileClosed: (transferId: string, name?: string) => { if (stopWaitingFor(link, transferId)) notSaved.push(`${name ?? "A file"}: the other device stopped sending it.`); },
+    // An offer that expired while it was held is not handed to the next tool.
+    offerClosed: (transferId: string) => { const held = offers.findIndex(offer => offer.transferId === transferId); if (held >= 0) offers.splice(held, 1); },
     closed: () => { if (kept === current) closeKeptLink(); },
     requestAnswer: undefined, watchStillFile: undefined, watchEnded: undefined, receipt: undefined, progress: undefined, error: undefined,
   } satisfies LinkEvents);

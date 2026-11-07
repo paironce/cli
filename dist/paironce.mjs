@@ -4483,6 +4483,7 @@ async function connect(identity, target2, ui, options = {}) {
       onWatchEnded: (id) => events.watchEnded?.(id),
       onFile: (file) => events.file?.(file),
       onIncomingFileClosed: (transferId, name) => events.fileClosed?.(transferId, name),
+      onFileOfferClosed: (transferId) => events.offerClosed?.(transferId),
       onFileOffer: (offer) => events.offer?.(offer),
       onFileReceipt: (receipt) => events.receipt?.(receipt),
       onProgress: (label, fraction, direction) => events.progress?.(label, fraction, direction),
@@ -4524,7 +4525,7 @@ async function connect(identity, target2, ui, options = {}) {
 
 // src/disk.ts
 import { createWriteStream, openAsBlob } from "node:fs";
-import { mkdir as mkdir2, readdir, readFile as readFile2, rename as rename2, rm as rm2, stat as stat2, statfs, truncate, writeFile as writeFile2 } from "node:fs/promises";
+import { mkdir as mkdir2, open as open2, readdir, readFile as readFile2, rename as rename2, rm as rm2, stat as stat2, statfs, truncate, writeFile as writeFile2 } from "node:fs/promises";
 import path2 from "node:path";
 
 // ../../apps/app/src/realtime/disk-receive.ts
@@ -4540,6 +4541,8 @@ var RESERVE_BYTES2 = 512 * 1024 * 1024;
 var partPath = (folder, entry) => path2.join(folder, `.paironce-${entry.replace(/[^A-Za-z0-9_-]/g, "_")}.part`);
 var notePath = (folder, entry) => partPath(folder, entry).replace(/\.part$/, ".json");
 function sinkFor(file, stream, name, mime) {
+  stream.on("error", () => {
+  });
   const closed = () => new Promise((resolve, reject) => stream.end((error) => error ? reject(error) : resolve()));
   return {
     write: (chunk) => new Promise((resolve, reject) => stream.write(chunk, (error) => error ? reject(error) : resolve())),
@@ -4557,7 +4560,7 @@ function sinkFor(file, stream, name, mime) {
 async function removeOldParts(folder, now = Date.now()) {
   const names = await readdir(folder).catch(() => []);
   for (const name of names) {
-    if (!/^\.paironce-[A-Za-z0-9_-]+\.(?:part|json)$/.test(name)) continue;
+    if (!/^\.paironce-[A-Za-z0-9_-]+\.(?:part|json|json\.lock)$/.test(name)) continue;
     const file = path2.join(folder, name);
     const info = await stat2(file).catch(() => void 0);
     if (info && now - info.mtimeMs > PARTIAL_KEEP_MS) await rm2(file, { force: true }).catch(() => {
@@ -4570,18 +4573,41 @@ function validPartial(value) {
 }
 function createDiskReceiver(folder) {
   const kept2 = [];
-  const restored = /* @__PURE__ */ new Set();
+  const restored = /* @__PURE__ */ new Map();
   const lost = /* @__PURE__ */ new Set();
   let keeping = Promise.resolve();
   let tidied = false;
   const forgetNote = (entry) => rm2(notePath(folder, entry), { force: true }).catch(() => {
   });
+  const claim = async (entry) => {
+    const at = restored.get(entry);
+    if (at === void 0) return true;
+    restored.delete(entry);
+    const note = notePath(folder, entry);
+    const lock = await open2(`${note}.lock`, "wx").catch(() => void 0);
+    if (!lock) return false;
+    try {
+      const seen = await readFile2(note, "utf8").then((text) => JSON.parse(text).at, () => void 0);
+      if (seen !== at) return false;
+      await rm2(note);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      await lock.close().catch(() => {
+      });
+      await rm2(`${note}.lock`, { force: true }).catch(() => {
+      });
+    }
+  };
+  const remove = async (entry) => {
+    if (!await claim(entry)) return;
+    await rm2(partPath(folder, entry), { force: true });
+    await forgetNote(entry);
+  };
   const drop = async (index) => {
     const [gone] = kept2.splice(index, 1);
-    if (gone) {
-      await rm2(partPath(folder, gone.partial.entry), { force: true });
-      await forgetNote(gone.partial.entry);
-    }
+    if (gone) await remove(gone.partial.entry);
   };
   return {
     /** Parts an earlier process kept here, for files sent again. Call before connecting; old ones go first. */
@@ -4595,7 +4621,7 @@ function createDiskReceiver(folder) {
         const size = await stat2(partPath(folder, note.partial.entry)).then((info) => info.size, () => -1);
         if (size < note.partial.next * note.partial.chunkSize) continue;
         kept2.push({ partial: note.partial, at: note.at });
-        restored.add(note.partial.entry);
+        restored.set(note.partial.entry, note.at);
       }
     },
     threshold: DISK_THRESHOLD_BYTES,
@@ -4611,16 +4637,9 @@ function createDiskReceiver(folder) {
     async open(entry, name, mime, offset = 0) {
       await mkdir2(folder, { recursive: true });
       const file = partPath(folder, entry);
-      if (offset > 0 && restored.delete(entry)) {
-        const note = notePath(folder, entry);
-        const claim = `${note}.${process.pid}.${Date.now()}`;
-        try {
-          await rename2(note, claim);
-          await rm2(claim, { force: true });
-        } catch {
-          lost.add(entry);
-          throw new Error("disk_partial_taken");
-        }
+      if (offset > 0 && !await claim(entry)) {
+        lost.add(entry);
+        throw new Error("disk_partial_taken");
       }
       if (offset > 0) {
         if ((await stat2(file)).size < offset) throw new Error("disk_partial_short");
@@ -4649,7 +4668,10 @@ function createDiskReceiver(folder) {
         const at = Date.now();
         kept2.push({ partial, at });
         const note = notePath(folder, partial.entry);
-        await writeFile2(`${note}.tmp`, JSON.stringify({ partial, at }), { mode: 384 }).then(() => rename2(`${note}.tmp`, note)).catch(() => {
+        await writeFile2(`${note}.tmp`, JSON.stringify({ partial, at }), { mode: 384 }).then(() => rename2(`${note}.tmp`, note)).then(() => {
+          if (kept2.some((item) => item.partial === partial)) restored.set(partial.entry, at);
+          else void forgetNote(partial.entry);
+        }, () => {
         });
         while (kept2.length > MAX_PARTIALS) await drop(0);
       })();
@@ -4666,17 +4688,14 @@ function createDiskReceiver(folder) {
     async discardPartial(partial) {
       if (lost.delete(partial.entry)) return;
       const index = kept2.findIndex((item) => item.partial === partial);
-      if (index >= 0) await drop(index);
-      else {
-        await rm2(partPath(folder, partial.entry), { force: true });
-        await forgetNote(partial.entry);
-      }
+      if (index >= 0) kept2.splice(index, 1);
+      await remove(partial.entry);
     }
   };
 }
 
 // src/receive.ts
-import { copyFile, mkdir as mkdir3, open as open2, realpath, rename as rename3, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
+import { copyFile, mkdir as mkdir3, open as open3, realpath, rename as rename3, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
 import path3 from "node:path";
 async function uniquePath(folder, name) {
   const safe = path3.basename(name.replace(/\\/g, "/")).replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069<>:"/\\|?*]/g, "_").replace(/^\.+/, "_") || "file";
@@ -4684,7 +4703,7 @@ async function uniquePath(folder, name) {
   for (let index = 0; ; index++) {
     const candidate = path3.join(folder, index ? `${stem} (${index})${ext}` : safe);
     try {
-      await (await open2(candidate, "wx")).close();
+      await (await open3(candidate, "wx")).close();
       return candidate;
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
@@ -4759,7 +4778,10 @@ async function receiveInto(link, folder, handlers, partsFolder = folder) {
       }
       acceptedOn(link).set(offer.transferId, folder);
       await link.session.acceptFile(offer.transferId);
-    })().catch((error) => handlers.failed?.(offer.name, error instanceof Error ? error.message : String(error)));
+    })().catch((error) => {
+      stopWaitingFor(link, offer.transferId);
+      handlers.failed?.(offer.name, error instanceof Error ? error.message : String(error));
+    });
   };
   link.events.file = (file) => {
     void saveArrived(link, file, folder, partsFolder).then((target2) => handlers.saved?.(target2)).catch((error) => handlers.failed?.(file.name, error instanceof Error ? error.message : String(error)));
@@ -4830,7 +4852,7 @@ async function sendPath(link, file, report = say) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.11.2";
+var CLI_VERSION = "0.11.3";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}
@@ -4896,6 +4918,11 @@ function rest(current) {
     },
     fileClosed: (transferId, name) => {
       if (stopWaitingFor(link, transferId)) notSaved.push(`${name ?? "A file"}: the other device stopped sending it.`);
+    },
+    // An offer that expired while it was held is not handed to the next tool.
+    offerClosed: (transferId) => {
+      const held = offers.findIndex((offer) => offer.transferId === transferId);
+      if (held >= 0) offers.splice(held, 1);
     },
     closed: () => {
       if (kept === current) closeKeptLink();
@@ -5501,7 +5528,7 @@ On your other device, open https://paironce.com, choose "Enter a code" and type:
   safetyCode: (code) => say(`Safety code: ${groups(code)}  (the other screen must show the same)`),
   approve: (peer) => ask(`Connect "${safeName(peer.name)}"? Check that both screens show the same safety code.`)
 };
-async function open3(identity, name, folder) {
+async function open4(identity, name, folder) {
   const devices = await listDevices();
   const picked = pickDevice(devices, name);
   if (picked === "ambiguous") throw new Error(`Which device? Use --to with one of: ${devices.map((device) => `"${device.name}"`).join(", ")}`);
@@ -5630,7 +5657,7 @@ async function main(argv) {
       say("Name the files to send: paironce send report.pdf photo.jpg");
       return 1;
     }
-    const link = await open3(identity, typeof flags.to === "string" ? flags.to : void 0);
+    const link = await open4(identity, typeof flags.to === "string" ? flags.to : void 0);
     try {
       for (const file of args) await sendPath(link, file);
     } finally {
@@ -5644,7 +5671,7 @@ async function main(argv) {
       say('Write the message: paironce text "https://example.com"');
       return 1;
     }
-    const link = await open3(identity, typeof flags.to === "string" ? flags.to : void 0);
+    const link = await open4(identity, typeof flags.to === "string" ? flags.to : void 0);
     try {
       await link.session.sendText(text);
       await link.session.drained();
@@ -5657,7 +5684,7 @@ async function main(argv) {
   }
   if (command === "receive") {
     const folder = path6.resolve(typeof flags.to === "string" ? flags.to : ".");
-    const link = await open3(identity, typeof flags.from === "string" ? flags.from : void 0, folder);
+    const link = await open4(identity, typeof flags.from === "string" ? flags.from : void 0, folder);
     try {
       await receive(link, folder, flags.yes === true);
     } finally {

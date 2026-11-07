@@ -482,7 +482,8 @@ describe("what programs keep", () => {
 describe("where an MCP tool saves", () => {
   it("is a folder inside the server's folder", async () => {
     const { insideFolder } = await import("./receive");
-    const root = realpathSync(cwd);
+    // The same call as the code under test: the two forms of realpath can differ on Windows (8.3 short names).
+    const root = await (await import("node:fs/promises")).realpath(cwd);
     expect(await insideFolder(undefined, "inbox")).toBe(path.join(root, "inbox"));
     expect(await insideFolder("scans/2026", "inbox")).toBe(path.join(root, "scans", "2026"));
     expect(await insideFolder("./scans\\june", "inbox")).toBe(path.join(root, "scans", "june"));

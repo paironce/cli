@@ -108,7 +108,11 @@ export async function receiveInto(link: Link, folder: string, handlers: ReceiveH
       if (!await handlers.accept(offer)) { await link.session.rejectFile(offer.transferId); return; }
       acceptedOn(link).set(offer.transferId, folder);
       await link.session.acceptFile(offer.transferId);
-    })().catch(error => handlers.failed?.(offer.name, error instanceof Error ? error.message : String(error)));
+    })().catch(error => {
+      // Not accepted after all, for example an offer that expired: it is not on its way (CLI 0.11.3, C05).
+      stopWaitingFor(link, offer.transferId);
+      handlers.failed?.(offer.name, error instanceof Error ? error.message : String(error));
+    });
   };
   link.events.file = (file: ReceivedFile) => {
     void saveArrived(link, file, folder, partsFolder).then(target => handlers.saved?.(target))
