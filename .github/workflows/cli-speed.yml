@@ -12,6 +12,12 @@ on:
       size_mib:
         description: File size in MiB, within the free allowance
         default: "100"
+      no_udp:
+        description: "1 to drop all outbound UDP except DNS"
+        default: "0"
+      delay_ms:
+        description: Milliseconds added to each packet leaving the machine
+        default: "0"
 permissions:
   contents: read
 jobs:
@@ -35,6 +41,19 @@ jobs:
           time npm install -g "$package"
           paironce --version
           du -sh "$(npm root -g)/paironce"
+      - name: Network
+        run: |
+          if [ "${{ inputs.no_udp }}" = "1" ]; then
+            sudo iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+            sudo iptables -A OUTPUT -o lo -j ACCEPT
+            sudo iptables -A OUTPUT -p udp -j DROP
+            sudo ip6tables -A OUTPUT -p udp --dport 53 -j ACCEPT
+            sudo ip6tables -A OUTPUT -o lo -j ACCEPT
+            sudo ip6tables -A OUTPUT -p udp -j DROP
+          fi
+          if [ "${{ inputs.delay_ms }}" != "0" ]; then
+            sudo tc qdisc add dev "$(ip route | awk '/default/{print $5; exit}')" root netem delay "${{ inputs.delay_ms }}ms"
+          fi
       - run: node .github/tools/cli-speed.mjs
         env:
           SIZE_MIB: ${{ inputs.size_mib }}
