@@ -9,17 +9,32 @@ const PATHS = (process.env.PATHS ?? 'udp,tcp,tls').split(',');
 const SIZES = (process.env.SIZES ?? '1,8').split(',').map(Number);
 const channel = undefined;
 
-const PACE = Number(process.env.PACE ?? 0);
+const PACE = process.env.PACE ?? '0';
 const init = ({ keep, pace }) => {
-  // An experiment only: the app waits on bufferedAmount, so a debt added to it holds the sender to `pace` KiB per second.
-  if (pace) {
+  // An experiment only. The app waits on bufferedAmount, so while this reports it as high the sender holds back.
+  // '700': that many KiB per second. 'w128': 128 KiB per round trip, read from the stats, only when this end is on a TCP or TLS relay.
+  if (pace !== '0') {
+    const fixed = pace.startsWith('w') ? 0 : Number(pace) * 1024;
+    const windowBytes = pace.startsWith('w') ? Number(pace.slice(1)) * 1024 : 0;
+    let rate = fixed || Infinity;
+    const setIntervalReal = window.setInterval.bind(window);
+    window.setInterval = (fn, ms, ...rest) => setIntervalReal(fn, ms === 250 ? 20 : ms, ...rest);
     const proto = RTCDataChannel.prototype;
     const real = Object.getOwnPropertyDescriptor(proto, 'bufferedAmount').get;
     const send = proto.send;
     let debt = 0; let at = performance.now();
-    const settle = () => { const now = performance.now(); debt = Math.max(0, debt - (now - at) / 1000 * pace * 1024); at = now; };
+    const settle = () => { const now = performance.now(); debt = rate === Infinity ? 0 : Math.max(0, debt - (now - at) / 1000 * rate); at = now; };
     proto.send = function (data) { settle(); debt += data.byteLength ?? data.size ?? data.length ?? 0; return send.call(this, data); };
-    Object.defineProperty(proto, 'bufferedAmount', { get() { settle(); return real.call(this) + debt; } });
+    Object.defineProperty(proto, 'bufferedAmount', { get() { settle(); return debt > 40 * 1024 ? real.call(this) + 8e6 : real.call(this); } });
+    if (windowBytes) setIntervalReal(async () => {
+      const pc = (window.__pcs ?? []).filter(item => item.connectionState === 'connected').pop();
+      if (!pc) return;
+      const report = await pc.getStats();
+      let pair;
+      report.forEach(item => { if (item.type === 'transport' && item.selectedCandidatePairId) pair = report.get(item.selectedCandidatePairId); });
+      const local = pair && report.get(pair.localCandidateId);
+      window.__rate = rate = local && ['tcp', 'tls'].includes(local.relayProtocol) && pair.currentRoundTripTime > 0 ? windowBytes / pair.currentRoundTripTime : Infinity;
+    }, 500);
   }
   localStorage.setItem('paironce.forceRelay', '1');
   const wanted = { none: () => false, udp: url => /^turn:.*transport=udp/.test(url), tcp: url => /^turn:.*transport=tcp/.test(url), tls: url => /^turns:/.test(url) }[keep];
