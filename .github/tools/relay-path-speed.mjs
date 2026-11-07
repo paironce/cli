@@ -9,7 +9,18 @@ const PATHS = (process.env.PATHS ?? 'udp,tcp,tls').split(',');
 const SIZES = (process.env.SIZES ?? '1,8').split(',').map(Number);
 const channel = undefined;
 
-const init = keep => {
+const PACE = Number(process.env.PACE ?? 0);
+const init = ({ keep, pace }) => {
+  // An experiment only: the app waits on bufferedAmount, so a debt added to it holds the sender to `pace` KiB per second.
+  if (pace) {
+    const proto = RTCDataChannel.prototype;
+    const real = Object.getOwnPropertyDescriptor(proto, 'bufferedAmount').get;
+    const send = proto.send;
+    let debt = 0; let at = performance.now();
+    const settle = () => { const now = performance.now(); debt = Math.max(0, debt - (now - at) / 1000 * pace * 1024); at = now; };
+    proto.send = function (data) { settle(); debt += data.byteLength ?? data.size ?? data.length ?? 0; return send.call(this, data); };
+    Object.defineProperty(proto, 'bufferedAmount', { get() { settle(); return real.call(this) + debt; } });
+  }
   localStorage.setItem('paironce.forceRelay', '1');
   const wanted = { none: () => false, udp: url => /^turn:.*transport=udp/.test(url), tcp: url => /^turn:.*transport=tcp/.test(url), tls: url => /^turns:/.test(url) }[keep];
   const Real = window.RTCPeerConnection;
@@ -37,11 +48,11 @@ const stats = page => page.evaluate(async () => {
 async function run(pathName, mib) {
   const [one, two] = pathName.split(':');
   const browser = await chromium.launch({ channel });
-  const result = { path: pathName, mib };
+  const result = { path: pathName, mib, pace: PACE };
   try {
     const open = async keep => {
       const context = await browser.newContext({ locale: 'en-US', viewport: { width: 1280, height: 900 }, permissions: ['clipboard-read', 'clipboard-write'] });
-      await context.addInitScript(init, keep);
+      await context.addInitScript(init, { keep, pace: PACE });
       const page = await context.newPage();
       await page.goto('https://paironce.com/');
       return page;

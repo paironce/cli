@@ -12,12 +12,15 @@ on:
       delays:
         description: Milliseconds added to each packet leaving the machine, space separated
         default: "0"
+      paces:
+        description: Sender limits to try in KiB per second, space separated; 0 for none
+        default: "0"
 permissions:
   contents: read
 jobs:
   speed:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -29,11 +32,14 @@ jobs:
           PATHS: ${{ inputs.paths }}
           SIZES: ${{ inputs.sizes }}
           DELAYS: ${{ inputs.delays }}
+          PACES: ${{ inputs.paces }}
         run: |
           device=$(ip route | awk '/default/{print $5; exit}')
           for delay in $DELAYS; do
             echo "delay $delay ms"
             sudo tc qdisc del dev "$device" root 2>/dev/null || true
             if [ "$delay" != "0" ]; then sudo tc qdisc add dev "$device" root netem delay "${delay}ms"; fi
-            LIMIT_SECONDS=150 node .github/tools/relay-path-speed.mjs
+            for pace in $PACES; do
+              PACE=$pace LIMIT_SECONDS=120 node .github/tools/relay-path-speed.mjs
+            done
           done
