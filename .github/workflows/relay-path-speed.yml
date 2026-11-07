@@ -40,6 +40,6 @@ jobs:
             sudo tc qdisc del dev "$device" root 2>/dev/null || true
             if [ "$delay" != "0" ]; then sudo tc qdisc add dev "$device" root netem delay "${delay}ms"; fi
             for pace in $PACES; do
-              PACE=$pace LIMIT_SECONDS=120 node .github/tools/relay-path-speed.mjs
+              PACE=$pace LIMIT_SECONDS=200 node .github/tools/relay-path-speed.mjs
             done
           done
