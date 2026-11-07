@@ -10,7 +10,7 @@ async function identity(home, name) {
   mkdirSync(home, { recursive: true });
   const pair = await webcrypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
   const publicKey = b64(new Uint8Array(await webcrypto.subtle.exportKey('raw', pair.publicKey)));
-  const id = b64(randomBytes(12));
+  const id = 'k1_' + b64(createHash('sha256').update(`paironce-device-id-v1:${publicKey}`).digest()).slice(0, 24);
   writeFileSync(`${home}/identity.json`, JSON.stringify({ id, name, publicKey, privateKey: await webcrypto.subtle.exportKey('jwk', pair.privateKey), createdAt: Date.now() }));
   return { id, name, publicKey, pairedAt: Date.now(), lastSeenAt: Date.now() };
 }
