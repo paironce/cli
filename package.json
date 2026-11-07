@@ -1,6 +1,6 @@
 {
   "name": "paironce",
-  "version": "0.11.3",
+  "version": "0.11.4",
   "mcpName": "io.github.paironce/cli",
   "description": "CLI and MCP server: send files and text between a terminal or an AI agent and your own phone or computer. Paired once, end-to-end encrypted, direct between the devices.",
   "license": "Apache-2.0",
