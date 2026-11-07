@@ -4428,6 +4428,29 @@ function pickDevice(devices, query) {
 }
 
 // src/connection.ts
+function holdEarlyOffers(events) {
+  const early = [];
+  let handler;
+  Object.defineProperty(events, "offer", {
+    enumerable: true,
+    configurable: true,
+    get: () => handler,
+    set(next) {
+      handler = next;
+      if (next) for (const offer of early.splice(0)) next(offer);
+    }
+  });
+  return {
+    arrive(offer) {
+      if (handler) handler(offer);
+      else if (early.length < 32) early.push(offer);
+    },
+    closed(transferId) {
+      const index = early.findIndex((offer) => offer.transferId === transferId);
+      if (index >= 0) early.splice(index, 1);
+    }
+  };
+}
 var httpOrigin = () => {
   const url = new URL(signalingOrigin());
   url.protocol = url.protocol === "ws:" ? "http:" : url.protocol === "wss:" ? "https:" : url.protocol;
@@ -4453,6 +4476,7 @@ async function lookupCode(code, identity) {
 }
 async function connect(identity, target2, ui, options = {}) {
   const events = {};
+  const offers = holdEarlyOffers(events);
   let room;
   const returning = target2.kind === "saved" ? target2.device : void 0;
   if (target2.kind === "host") {
@@ -4543,8 +4567,11 @@ async function connect(identity, target2, ui, options = {}) {
       onWatchEnded: (id) => events.watchEnded?.(id),
       onFile: (file) => events.file?.(file),
       onIncomingFileClosed: (transferId, name) => events.fileClosed?.(transferId, name),
-      onFileOfferClosed: (transferId) => events.offerClosed?.(transferId),
-      onFileOffer: (offer) => events.offer?.(offer),
+      onFileOfferClosed: (transferId) => {
+        offers.closed(transferId);
+        events.offerClosed?.(transferId);
+      },
+      onFileOffer: (offer) => offers.arrive(offer),
       onFileReceipt: (receipt) => events.receipt?.(receipt),
       onProgress: (label, fraction, direction) => events.progress?.(label, fraction, direction),
       // The first thing a sandbox with an allow-list meets: say why, and what to do.
