@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_PARTIALS, PARTIAL_KEEP_MS } from "../../../apps/app/src/realtime/disk-receive";
 import { createDiskReceiver, partPath, removeOldParts } from "./disk";
 import { receiveInto, stillArriving } from "./receive";
-import type { Link } from "./connection";
+import { holdEarlyOffers, type Link, type LinkEvents } from "./connection";
 
 const partial = (entry = "fixture-part", resumeKey = "resume-key-fixture-001") => ({ entry, peerId: "peer-device-000000001", resumeKey, name: "file.bin", mime: "application/octet-stream", size: 8, chunkSize: 4, totalChunks: 2, next: 1 });
 const folders: string[] = [];
@@ -159,5 +159,34 @@ describe("a file that could not be accepted (C05)", () => {
     await receiveInto(link, fresh(), { accept: async () => true });
     link.events.offer?.({ transferId: "fine", name: "fine.txt" } as never);
     await vi.waitFor(() => expect(stillArriving(link)).toBe(1));
+  });
+});
+
+describe("an offer that arrives before the command listens", () => {
+  const offer = (transferId: string) => ({ transferId, name: `${transferId}.txt` }) as never;
+
+  it("is accepted once it does", async () => {
+    const events: LinkEvents = {};
+    const offers = holdEarlyOffers(events);
+    offers.arrive(offer("early"));
+    const accepted = vi.fn(async () => {});
+    const link = { session: { acceptFile: accepted }, events } as unknown as Link;
+    await receiveInto(link, fresh(), { accept: async () => true });
+    await vi.waitFor(() => expect(accepted).toHaveBeenCalledWith("early"));
+    offers.arrive(offer("later"));
+    await vi.waitFor(() => expect(accepted).toHaveBeenCalledWith("later"));
+    expect(accepted).toHaveBeenCalledTimes(2);
+  });
+
+  it("is not handed on after it ended, and only so many wait", () => {
+    const events: LinkEvents = {};
+    const offers = holdEarlyOffers(events);
+    offers.arrive(offer("gone"));
+    offers.closed("gone");
+    for (let number = 0; number < 40; number++) offers.arrive(offer(`file-${number}`));
+    const seen: string[] = [];
+    Object.assign(events, { offer: (item: { transferId: string }) => seen.push(item.transferId) });
+    expect(seen).toHaveLength(32);
+    expect(seen).not.toContain("gone");
   });
 });

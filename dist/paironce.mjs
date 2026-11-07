@@ -689,6 +689,49 @@ function timeoutSignal(milliseconds) {
   return controller.signal;
 }
 
+// ../../apps/app/src/tcp-relay-pacer.ts
+var TCP_RELAY_WINDOW_BYTES = 128 * 1024;
+var DEFAULT_ROUND_TRIP_SECONDS = 0.1;
+var LONGEST_ROUND_TRIP_SECONDS = 1;
+var AHEAD_BYTES = 64 * 1024;
+function tcpRelayRoundTrip(reports) {
+  let pair;
+  for (const value of reports.values()) {
+    const report = value;
+    if (report.type === "transport" && typeof report.selectedCandidatePairId === "string") {
+      pair = reports.get(report.selectedCandidatePairId);
+      if (pair) break;
+    }
+    if (report.type === "candidate-pair" && report.state === "succeeded" && (report.selected || report.nominated)) pair = report;
+  }
+  const local = typeof pair?.localCandidateId === "string" ? reports.get(pair.localCandidateId) : void 0;
+  if (local?.candidateType !== "relay") return void 0;
+  const overTcp = typeof local.relayProtocol === "string" ? local.relayProtocol === "tcp" || local.relayProtocol === "tls" : typeof local.url === "string" && (/^turns:/.test(local.url) || /transport=tcp/.test(local.url));
+  if (!overTcp) return void 0;
+  const roundTrip = pair?.currentRoundTripTime;
+  return typeof roundTrip === "number" && Number.isFinite(roundTrip) && roundTrip > 0 ? roundTrip : DEFAULT_ROUND_TRIP_SECONDS;
+}
+var TcpRelayPacer = class {
+  #rate = Infinity;
+  #ahead = 0;
+  #at = 0;
+  /** The round trip to pace to; undefined for no limit. */
+  setRoundTrip(seconds) {
+    this.#rate = seconds === void 0 ? Infinity : TCP_RELAY_WINDOW_BYTES / Math.min(seconds, LONGEST_ROUND_TRIP_SECONDS);
+  }
+  /** Counts bytes about to be sent; the milliseconds to wait first. A long wait gives at most one window of credit, not a burst. */
+  charge(bytes, now) {
+    if (this.#rate === Infinity) {
+      this.#ahead = 0;
+      this.#at = now;
+      return 0;
+    }
+    this.#ahead = Math.max(-TCP_RELAY_WINDOW_BYTES, this.#ahead - (now - this.#at) / 1e3 * this.#rate) + bytes;
+    this.#at = now;
+    return this.#ahead > AHEAD_BYTES ? (this.#ahead - AHEAD_BYTES) / this.#rate * 1e3 : 0;
+  }
+};
+
 // ../../apps/app/src/tunnel-channel.ts
 var SIGNAL_PING = '{"type":"ping"}';
 var SIGNAL_PONG = '{"type":"pong"}';
@@ -1047,6 +1090,7 @@ var MAX_QUEUED_BYTES = 128 * 1024 * 1024;
 var MAX_CONTROL_FRAME_KEYS = 2e5;
 var BUFFER_HIGH_WATER = 512 * 1024;
 var BUFFER_POLL_MS = 250;
+var SEND_PATH_READ_MS = 2e3;
 var DIRECT_RETRY_TIMEOUT_MS = 15e3;
 var DISCONNECT_RECOVERY_TIMEOUT_MS = 45e3;
 var FILE_ACK_TIMEOUT_MS = 3e4;
@@ -1248,6 +1292,8 @@ var PeerSession = class {
   /** The most #relayBytes may reach: what was reported plus what the server said is left, or 32 MiB without an allowance. */
   #relayLimit = RELAY_SESSION_BYTE_LIMIT;
   #relayOnPeerOnly = false;
+  #sendPacer = new TcpRelayPacer();
+  #sendPathReadAt = 0;
   /** Whether the server names a monthly allowance; only then is usage reported. */
   #relayAllowance = false;
   #relayReported = 0;
@@ -2416,6 +2462,7 @@ var PeerSession = class {
           plainSize: plaintext.byteLength
         }), operationSignal);
         await this.#waitForWritableChannel(operationSignal);
+        await this.#paceSend(ciphertext.byteLength, operationSignal);
         operationSignal.throwIfAborted();
         if (this.#peerBinaryChunks) this.#sendBinary(encodeFileChunk(transferId, index, ciphertext));
         else this.#sendFrame({ v: PROTOCOL_VERSION, type: "file-chunk", transferId, index, ciphertext: toBase64Url(ciphertext) });
@@ -4074,6 +4121,19 @@ var PeerSession = class {
     if (this.#channel?.readyState !== "open") throw new Error("The peer channel is not ready");
     this.#channel.send(frame);
   }
+  /** On a TCP or TLS relay, waits so that this end sends one window per round trip (tcp-relay-pacer.ts). */
+  async #paceSend(bytes, signal) {
+    if (this.#channel instanceof TunnelChannel) return;
+    if (Date.now() >= this.#sendPathReadAt) {
+      this.#sendPathReadAt = Date.now() + SEND_PATH_READ_MS;
+      const reports = await this.#peer?.getStats().catch(() => void 0);
+      this.#sendPacer.setRoundTrip(reports ? tcpRelayRoundTrip(reports) : void 0);
+    }
+    const wait = this.#sendPacer.charge(bytes, Date.now());
+    if (wait > 0) await abortable(new Promise((resolve) => {
+      setTimeout(resolve, wait);
+    }), signal);
+  }
   async #waitForWritableChannel(signal, drain = false) {
     signal?.throwIfAborted();
     const transportSignal = this.#transportAbort.signal;
@@ -4368,6 +4428,29 @@ function pickDevice(devices, query) {
 }
 
 // src/connection.ts
+function holdEarlyOffers(events) {
+  const early = [];
+  let handler;
+  Object.defineProperty(events, "offer", {
+    enumerable: true,
+    configurable: true,
+    get: () => handler,
+    set(next) {
+      handler = next;
+      if (next) for (const offer of early.splice(0)) next(offer);
+    }
+  });
+  return {
+    arrive(offer) {
+      if (handler) handler(offer);
+      else if (early.length < 32) early.push(offer);
+    },
+    closed(transferId) {
+      const index = early.findIndex((offer) => offer.transferId === transferId);
+      if (index >= 0) early.splice(index, 1);
+    }
+  };
+}
 var httpOrigin = () => {
   const url = new URL(signalingOrigin());
   url.protocol = url.protocol === "ws:" ? "http:" : url.protocol === "wss:" ? "https:" : url.protocol;
@@ -4393,6 +4476,7 @@ async function lookupCode(code, identity) {
 }
 async function connect(identity, target2, ui, options = {}) {
   const events = {};
+  const offers = holdEarlyOffers(events);
   let room;
   const returning = target2.kind === "saved" ? target2.device : void 0;
   if (target2.kind === "host") {
@@ -4483,8 +4567,11 @@ async function connect(identity, target2, ui, options = {}) {
       onWatchEnded: (id) => events.watchEnded?.(id),
       onFile: (file) => events.file?.(file),
       onIncomingFileClosed: (transferId, name) => events.fileClosed?.(transferId, name),
-      onFileOfferClosed: (transferId) => events.offerClosed?.(transferId),
-      onFileOffer: (offer) => events.offer?.(offer),
+      onFileOfferClosed: (transferId) => {
+        offers.closed(transferId);
+        events.offerClosed?.(transferId);
+      },
+      onFileOffer: (offer) => offers.arrive(offer),
       onFileReceipt: (receipt) => events.receipt?.(receipt),
       onProgress: (label, fraction, direction) => events.progress?.(label, fraction, direction),
       // The first thing a sandbox with an allow-list meets: say why, and what to do.
@@ -4852,7 +4939,7 @@ async function sendPath(link, file, report = say) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.11.3";
+var CLI_VERSION = "0.11.4";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}

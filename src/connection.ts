@@ -45,6 +45,22 @@ export interface LinkEvents {
   closed?(): void;
 }
 
+/**
+ * An offer can arrive in the moment between the connection being ready and the command listening. Dropped, the sender
+ * waits out its three minutes for an answer that never comes (seen with two CLIs, CLI 0.11.4). It waits here instead,
+ * and goes to whoever sets `events.offer` first. An offer that ends meanwhile, or more than 32, are not kept.
+ */
+export function holdEarlyOffers(events: LinkEvents): { arrive(offer: FileOffer): void; closed(transferId: string): void } {
+  const early: FileOffer[] = [];
+  let handler: LinkEvents["offer"];
+  Object.defineProperty(events, "offer", { enumerable: true, configurable: true, get: () => handler,
+    set(next: LinkEvents["offer"]) { handler = next; if (next) for (const offer of early.splice(0)) next(offer); } });
+  return {
+    arrive(offer) { if (handler) handler(offer); else if (early.length < 32) early.push(offer); },
+    closed(transferId) { const index = early.findIndex(offer => offer.transferId === transferId); if (index >= 0) early.splice(index, 1); },
+  };
+}
+
 export interface Link { session: PeerSession; peer: PairedDevice; path: DeliveryPath; events: LinkEvents; close(): void; isOpen(): boolean }
 
 export type Target = { kind: "host" } | { kind: "join"; code: string } | { kind: "saved"; device: PairedDevice };
@@ -77,6 +93,7 @@ async function lookupCode(code: string, identity: DeviceIdentity) {
 /** Connects and resolves once the encrypted channel is open and both devices confirmed each other. */
 export async function connect(identity: DeviceIdentity, target: Target, ui: ConnectUi, options: { diskReceive?: DiskReceiver; signal?: AbortSignal } = {}): Promise<Link> {
   const events: LinkEvents = {};
+  const offers = holdEarlyOffers(events);
   let room: { roomId: string; secret: Uint8Array<ArrayBuffer>; role: "host" | "join"; expected?: PeerIdentityDescriptor; code?: string; expiresAt: number };
   const returning = target.kind === "saved" ? target.device : undefined;
   if (target.kind === "host") {
@@ -147,8 +164,8 @@ export async function connect(identity: DeviceIdentity, target: Target, ui: Conn
       onWatchEnded: id => events.watchEnded?.(id),
       onFile: file => events.file?.(file),
       onIncomingFileClosed: (transferId, name) => events.fileClosed?.(transferId, name),
-      onFileOfferClosed: transferId => events.offerClosed?.(transferId),
-      onFileOffer: offer => events.offer?.(offer),
+      onFileOfferClosed: transferId => { offers.closed(transferId); events.offerClosed?.(transferId); },
+      onFileOffer: offer => offers.arrive(offer),
       onFileReceipt: receipt => events.receipt?.(receipt),
       onProgress: (label, fraction, direction) => events.progress?.(label, fraction, direction),
       // The first thing a sandbox with an allow-list meets: say why, and what to do.
