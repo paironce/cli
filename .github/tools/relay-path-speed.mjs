@@ -11,7 +11,7 @@ const channel = undefined;
 
 const init = keep => {
   localStorage.setItem('paironce.forceRelay', '1');
-  const wanted = { udp: url => /^turn:.*transport=udp/.test(url), tcp: url => /^turn:.*transport=tcp/.test(url), tls: url => /^turns:/.test(url) }[keep];
+  const wanted = { none: () => false, udp: url => /^turn:.*transport=udp/.test(url), tcp: url => /^turn:.*transport=tcp/.test(url), tls: url => /^turns:/.test(url) }[keep];
   const Real = window.RTCPeerConnection;
   window.__pcs = [];
   window.RTCPeerConnection = class extends Real {
