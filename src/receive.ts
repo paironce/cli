@@ -89,6 +89,10 @@ export async function saveArrived(link: Link, file: ReceivedFile, folder: string
   return target;
 }
 
+/** Saves still being written: a program that is ending waits for them, so no file is left cut off (CLI 0.11.5, B15). */
+const saving = new Set<Promise<unknown>>();
+export const savesSettled = (): Promise<unknown> => Promise.allSettled([...saving]);
+
 export interface ReceiveHandlers {
   /** Whether to take an offered file. */
   accept(offer: FileOffer): Promise<boolean>;
@@ -115,8 +119,10 @@ export async function receiveInto(link: Link, folder: string, handlers: ReceiveH
     });
   };
   link.events.file = (file: ReceivedFile) => {
-    void saveArrived(link, file, folder, partsFolder).then(target => handlers.saved?.(target))
+    const save = saveArrived(link, file, folder, partsFolder).then(target => handlers.saved?.(target))
       .catch(error => handlers.failed?.(file.name, error instanceof Error ? error.message : String(error)));
+    saving.add(save);
+    void save.finally(() => saving.delete(save));
   };
   link.events.fileClosed = (transferId, name) => {
     if (stopWaitingFor(link, transferId)) handlers.failed?.(name ?? "A file", "the other device stopped sending it.");

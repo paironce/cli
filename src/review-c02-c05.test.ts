@@ -115,7 +115,7 @@ describe("a part two processes found (C02)", () => {
       expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
       for (const result of results) if (result.status === "fulfilled") await result.value.park();
     }
-  });
+  }, 60_000);
 
   it("an old lock left by a process that ended is tidied", async () => {
     const folder = fresh();

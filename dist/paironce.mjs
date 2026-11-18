@@ -1092,6 +1092,8 @@ var BUFFER_HIGH_WATER = 512 * 1024;
 var BUFFER_POLL_MS = 250;
 var SEND_PATH_READ_MS = 2e3;
 var DIRECT_RETRY_TIMEOUT_MS = 15e3;
+var RELAY_RETRY_STATUS = "Direct connection failed; retrying through TURN relay\u2026";
+var TUNNEL_STATUS = "The relay did not connect; connecting through the PairOnce tunnel\u2026";
 var DISCONNECT_RECOVERY_TIMEOUT_MS = 45e3;
 var FILE_ACK_TIMEOUT_MS = 3e4;
 var READ_BLOCK_BYTES = 32 * FILE_CHUNK_SIZE;
@@ -2820,7 +2822,7 @@ var PeerSession = class {
   async #beginTunnel() {
     this.#tunnelTried = true;
     this.#clearConnectionTimer();
-    this.#callbacks.onStatus("The relay did not connect; connecting through the PairOnce tunnel\u2026");
+    this.#callbacks.onStatus(TUNNEL_STATUS);
     this.#resetPeer();
     if (this.#socket?.readyState === WebSocket.OPEN) this.#sendHello();
     const generation = this.#peerGeneration;
@@ -2955,7 +2957,7 @@ var PeerSession = class {
     this.#retryCount = 1;
     this.#forceRelay = true;
     this.#callbacks.onTransportRetry?.("turn");
-    this.#callbacks.onStatus("Direct connection failed; retrying through TURN relay\u2026");
+    this.#callbacks.onStatus(RELAY_RETRY_STATUS);
     this.#resetPeer();
     if (notifyPeer && this.#socket?.readyState === WebSocket.OPEN) this.#sendHello();
     if (this.#role === "host") {
@@ -4492,7 +4494,7 @@ async function connect(identity, target2, ui, options = {}) {
   }
   return new Promise((resolve, reject) => {
     let peer;
-    let saving = Promise.resolve();
+    let saving2 = Promise.resolve();
     let settled = false;
     let ended = false;
     const fail = (error) => {
@@ -4543,7 +4545,7 @@ async function connect(identity, target2, ui, options = {}) {
       },
       onPairingConfirmed: (confirmed) => {
         peer = { ...confirmed, name: safeName(confirmed.name), pairedAt: Date.now(), lastSeenAt: Date.now() };
-        saving = saveDevice(confirmed).then((saved) => {
+        saving2 = saveDevice(confirmed).then((saved) => {
           peer = saved;
         }, (error) => {
           ui.status?.(error instanceof Error ? error.message : String(error));
@@ -4556,7 +4558,7 @@ async function connect(identity, target2, ui, options = {}) {
       onReady: (path7) => {
         if (settled) return;
         settled = true;
-        void saving.then(() => resolve({ session, peer: peer ?? { ...room.expected, pairedAt: Date.now(), lastSeenAt: Date.now() }, path: path7, events, close: () => {
+        void saving2.then(() => resolve({ session, peer: peer ?? { ...room.expected, pairedAt: Date.now(), lastSeenAt: Date.now() }, path: path7, events, close: () => {
           ended = true;
           session.close();
         }, isOpen: () => !ended }));
@@ -4855,6 +4857,8 @@ async function saveArrived(link, file, folder, partsFolder) {
   });
   return target2;
 }
+var saving = /* @__PURE__ */ new Set();
+var savesSettled = () => Promise.allSettled([...saving]);
 async function receiveInto(link, folder, handlers, partsFolder = folder) {
   await mkdir3(folder, { recursive: true });
   link.events.offer = (offer) => {
@@ -4871,12 +4875,27 @@ async function receiveInto(link, folder, handlers, partsFolder = folder) {
     });
   };
   link.events.file = (file) => {
-    void saveArrived(link, file, folder, partsFolder).then((target2) => handlers.saved?.(target2)).catch((error) => handlers.failed?.(file.name, error instanceof Error ? error.message : String(error)));
+    const save = saveArrived(link, file, folder, partsFolder).then((target2) => handlers.saved?.(target2)).catch((error) => handlers.failed?.(file.name, error instanceof Error ? error.message : String(error)));
+    saving.add(save);
+    void save.finally(() => saving.delete(save));
   };
   link.events.fileClosed = (transferId, name) => {
     if (stopWaitingFor(link, transferId)) handlers.failed?.(name ?? "A file", "the other device stopped sending it.");
   };
   if (handlers.text) link.events.text = handlers.text;
+}
+
+// src/options.ts
+var COMMAND_OPTIONS = { send: ["to"], text: ["to"], receive: ["to", "from", "yes"], pair: [], devices: [], forget: [], mcp: [] };
+var EVERY_COMMAND = ["name", "agent", "ephemeral", "help", "version"];
+var WITH_VALUE = ["to", "from", "name"];
+function wrongOption(command, flags) {
+  const known = COMMAND_OPTIONS[command];
+  for (const [flag, value] of Object.entries(flags)) {
+    if (known && !EVERY_COMMAND.includes(flag) && !known.includes(flag)) return `"${command}" has no option --${flag}.`;
+    if (WITH_VALUE.includes(flag) && (value === true || !value.trim())) return `--${flag} needs a value.`;
+  }
+  return void 0;
 }
 
 // src/mcp.ts
@@ -4916,13 +4935,16 @@ async function sendPath(link, file, report = say) {
   if (!info.isFile()) throw new Error(`${file} is not a file. Send the files inside a folder with: paironce send ${path4.join(file, "*")}`);
   const name = path4.basename(file);
   const blob = await openAsBlob2(file);
+  let markReceived = () => {
+  };
   const received = new Promise((resolve) => {
-    const before = link.events.receipt;
-    link.events.receipt = (receipt) => {
-      before?.(receipt);
-      if (receipt.stage === "received") resolve();
-    };
+    markReceived = resolve;
   });
+  const before = link.events.receipt;
+  link.events.receipt = (receipt) => {
+    before?.(receipt);
+    if (receipt.stage === "received") markReceived();
+  };
   let shown = -1;
   link.events.progress = (label, fraction, direction) => {
     const percent = Math.floor(fraction * 100);
@@ -4933,13 +4955,21 @@ async function sendPath(link, file, report = say) {
   };
   report(`Sending ${name} (${human(info.size)}). Waiting for ${link.peer.name} to accept\u2026`);
   const resumeKey = createHash("sha256").update(`paironce-send-v1\0${path4.resolve(file)}\0${info.size}\0${info.mtimeMs}`).digest("base64url").slice(0, 32);
-  await link.session.sendFile(new File([blob], name, { lastModified: info.mtimeMs }), void 0, void 0, { resumeKey });
-  await Promise.race([received, new Promise((resolve) => setTimeout(resolve, 3e4))]);
+  let timer;
+  try {
+    await link.session.sendFile(new File([blob], name, { lastModified: info.mtimeMs }), void 0, void 0, { resumeKey });
+    await Promise.race([received, new Promise((resolve) => {
+      timer = setTimeout(resolve, 3e4);
+    })]);
+  } finally {
+    clearTimeout(timer);
+    link.events.receipt = before;
+  }
   report(`Sent ${name}.`);
 }
 
 // src/version.ts
-var CLI_VERSION = "0.11.4";
+var CLI_VERSION = "0.11.5";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}
@@ -5390,7 +5420,7 @@ async function openSaved(device, seconds, receiving2 = false) {
   const identity = await loadOrCreateIdentity();
   const devices = await listDevices();
   const picked = pickDevice(devices, device);
-  if (picked === "none") throw new Error(devices.length ? `No paired device is called "${device}".` : "No device is paired yet. Ask the user for the code paironce.com shows on their device, then call pair_device.");
+  if (picked === "none") throw new Error(devices.length ? `No paired device is called "${device}".` : 'No device is paired yet. Call pair_device: it shows a six-digit code; tell the user to open paironce.com on their phone, choose "Enter a code" and type it.');
   if (picked === "ambiguous") throw new Error(`Name the device: ${devices.map((item) => item.name).join(", ")}.`);
   if (kept && kept.link.isOpen() && kept.link.peer.id === picked.id) return inUse(kept);
   closeKeptLink();
@@ -5466,7 +5496,7 @@ ${failures.join("\n")}`);
 async function callTool(name, args) {
   if (name === "list_devices") {
     const devices = await listDevices();
-    return devices.length ? devices.map((device2) => `${device2.name} (last seen ${new Date(device2.lastSeenAt).toISOString()})`).join("\n") : "No paired devices. Ask the user for the code paironce.com shows on their device, then call pair_device.";
+    return devices.length ? devices.map((device2) => `${device2.name} (last seen ${new Date(device2.lastSeenAt).toISOString()})`).join("\n") : 'No paired devices. Call pair_device: it shows a six-digit code; tell the user to open paironce.com on their phone, choose "Enter a code" and type it.';
   }
   if (name === "pair_device") return pairDevice(args);
   const device = typeof args.device === "string" && args.device ? args.device : void 0;
@@ -5648,6 +5678,7 @@ async function receive(link, folder, acceptAll) {
   });
   link.close();
   await new Promise((resolve) => setTimeout(resolve, 50));
+  await savesSettled();
   await receiving?.settled();
 }
 var HELP = `paironce ${CLI_VERSION}: send files and text from this terminal to your own devices (https://paironce.com).
@@ -5688,6 +5719,11 @@ async function main(argv) {
 `);
     return command || flags.help ? 0 : 1;
   }
+  const wrong = wrongOption(command, flags);
+  if (wrong) {
+    say(`${wrong} Run "paironce help".`);
+    return 1;
+  }
   if (typeof flags.name === "string") process.env.PAIRONCE_NAME = flags.name;
   if (flags.agent || command === "mcp") process.env.PAIRONCE_AGENT = "1";
   if (flags.ephemeral) {
@@ -5715,7 +5751,11 @@ async function main(argv) {
     return 0;
   }
   if (command === "forget") {
-    const picked = pickDevice(await listDevices(), args.join(" ") || void 0);
+    if (!args.join(" ").trim()) {
+      say('Name the device to forget: paironce forget "<name>". Run "paironce devices" to see them.');
+      return 1;
+    }
+    const picked = pickDevice(await listDevices(), args.join(" "));
     if (typeof picked === "string") {
       say(picked === "none" ? "No such device." : "Several devices match; name it more exactly.");
       return 1;

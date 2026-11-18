@@ -279,8 +279,9 @@ describe("a file that arrives after the call that accepted it stopped waiting", 
     const { callTool, link } = await start();
     expect(await late(callTool, link)).toContain("still on the way");
     link.events.file(received("a.txt", new Uint8Array([1, 2, 3])));
-    await vi.waitFor(() => expect(readdirSync(path.join(cwd, "first"))).toEqual(["a.txt"]));
-    expect(link.session.confirmFileSaved).toHaveBeenCalledWith("t-a.txt-aaaaaaaaaaaaaaaa");
+    // The file name appears before its bytes are written: wait for the save itself, then look at the folder (2.34.0, B21).
+    await vi.waitFor(() => expect(link.session.confirmFileSaved).toHaveBeenCalledWith("t-a.txt-aaaaaaaaaaaaaaaa"));
+    expect(readdirSync(path.join(cwd, "first"))).toEqual(["a.txt"]);
     const next = await callTool("receive_files", { folder: "second", wait_seconds: 10 });
     expect(next).toContain(path.join("first", "a.txt"));
     expect(next).not.toContain("still on the way");

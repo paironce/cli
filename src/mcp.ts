@@ -363,7 +363,7 @@ async function openSaved(device: string | undefined, seconds: number, receiving 
   const identity = await loadOrCreateIdentity();
   const devices = await listDevices();
   const picked = pickDevice(devices, device);
-  if (picked === "none") throw new Error(devices.length ? `No paired device is called "${device}".` : "No device is paired yet. Ask the user for the code paironce.com shows on their device, then call pair_device.");
+  if (picked === "none") throw new Error(devices.length ? `No paired device is called "${device}".` : "No device is paired yet. Call pair_device: it shows a six-digit code; tell the user to open paironce.com on their phone, choose \"Enter a code\" and type it.");
   if (picked === "ambiguous") throw new Error(`Name the device: ${devices.map(item => item.name).join(", ")}.`);
   if (kept && kept.link.isOpen() && kept.link.peer.id === picked.id) return inUse(kept);
   closeKeptLink();
@@ -414,7 +414,7 @@ async function receiveFiles(args: Record<string, unknown>, device: string | unde
 export async function callTool(name: string, args: Record<string, unknown>): Promise<string | Content[]> {
   if (name === "list_devices") {
     const devices = await listDevices();
-    return devices.length ? devices.map(device => `${device.name} (last seen ${new Date(device.lastSeenAt).toISOString()})`).join("\n") : "No paired devices. Ask the user for the code paironce.com shows on their device, then call pair_device.";
+    return devices.length ? devices.map(device => `${device.name} (last seen ${new Date(device.lastSeenAt).toISOString()})`).join("\n") : "No paired devices. Call pair_device: it shows a six-digit code; tell the user to open paironce.com on their phone, choose \"Enter a code\" and type it.";
   }
   if (name === "pair_device") return pairDevice(args);
   const device = typeof args.device === "string" && args.device ? args.device : undefined;

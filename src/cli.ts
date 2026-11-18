@@ -20,7 +20,8 @@ import { createInterface } from "node:readline/promises";
 import path from "node:path";
 import { connect, type ConnectUi, type Link, type Target } from "./connection";
 import { createDiskReceiver } from "./disk";
-import { receiveInto } from "./receive";
+import { receiveInto, savesSettled } from "./receive";
+import { wrongOption } from "./options";
 import { forgetDevice, listDevices, loadOrCreateIdentity, pickDevice, safeName } from "./store";
 import { runMcp } from "./mcp";
 import { CLI_VERSION } from "./version";
@@ -96,6 +97,7 @@ async function receive(link: Link, folder: string, acceptAll: boolean): Promise<
   // A file cut off is kept to continue: closing hands it over, and that is written before this program ends.
   link.close();
   await new Promise(resolve => setTimeout(resolve, 50));
+  await savesSettled();
   await receiving?.settled();
 }
 
@@ -137,6 +139,8 @@ async function main(argv: string[]): Promise<number> {
   const [command, ...args] = rest;
   if (flags.version) { process.stdout.write(`${CLI_VERSION}\n`); return 0; }
   if (!command || flags.help || command === "help") { process.stdout.write(`${HELP}\n`); return command || flags.help ? 0 : 1; }
+  const wrong = wrongOption(command, flags);
+  if (wrong) { say(`${wrong} Run "paironce help".`); return 1; }
   if (typeof flags.name === "string") process.env.PAIRONCE_NAME = flags.name;
   if (flags.agent || command === "mcp") process.env.PAIRONCE_AGENT = "1";
   if (flags.ephemeral) {
@@ -161,7 +165,9 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if (command === "forget") {
-    const picked = pickDevice(await listDevices(), args.join(" ") || undefined);
+    // Only the device named: with none named nothing is forgotten, even when one device is paired (CLI 0.11.5, B07).
+    if (!args.join(" ").trim()) { say('Name the device to forget: paironce forget "<name>". Run "paironce devices" to see them.'); return 1; }
+    const picked = pickDevice(await listDevices(), args.join(" "));
     if (typeof picked === "string") { say(picked === "none" ? "No such device." : "Several devices match; name it more exactly."); return 1; }
     await forgetDevice(picked.id);
     say(`Forgot ${picked.name}. Remove "${identity.name}" on that device too.`);
