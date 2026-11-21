@@ -5,12 +5,12 @@
   "description": "Send files to a phone from an AI agent, or ask it for a photo, scan or file. End-to-end encrypted.",
   "websiteUrl": "https://paironce.com",
   "repository": { "url": "https://github.com/paironce/cli", "source": "github" },
-  "version": "0.12.0",
+  "version": "0.12.1",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "paironce",
-      "version": "0.12.0",
+      "version": "0.12.1",
       "transport": { "type": "stdio" },
       "packageArguments": [{ "type": "positional", "value": "mcp" }]
     }

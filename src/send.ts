@@ -34,6 +34,24 @@ export async function refusedToAgent(file: string, ownHome: string): Promise<str
 }
 
 /**
+ * A file's type from its name. The type travels with the offer, and the phone uses it to preview a picture and to offer
+ * Share (Chrome on Android shares only some types): without it every file from here arrived as an unknown binary
+ * (CLI 0.12.1, real Galaxy S24, 2026-11-21).
+ */
+const TYPES: Record<string, string> = {
+  pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", avif: "image/avif",
+  heic: "image/heic", heif: "image/heif", bmp: "image/bmp", tif: "image/tiff", tiff: "image/tiff", svg: "image/svg+xml",
+  mp4: "video/mp4", m4v: "video/mp4", mov: "video/quicktime", webm: "video/webm", mp3: "audio/mpeg", m4a: "audio/x-m4a", wav: "audio/wav",
+  ogg: "audio/ogg", opus: "audio/ogg", flac: "audio/flac", txt: "text/plain", text: "text/plain", md: "text/markdown", csv: "text/csv",
+  html: "text/html", htm: "text/html", css: "text/css", json: "application/json", xml: "application/xml", zip: "application/zip",
+  doc: "application/msword", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  rtf: "application/rtf", epub: "application/epub+zip",
+};
+export const typeOf = (name: string): string => TYPES[path.extname(name).slice(1).toLowerCase()] ?? "";
+
+/**
  * Send one file and wait until the other device has it. The other side accepts it first. `sendFile` itself returns only
  * when that device confirms this very transfer with its encrypted receipt, and throws when it does not within 30 s of the
  * last byte; no second wait for a receipt is needed here (CLI 0.11.6, after the 11-20 agent review).
@@ -52,7 +70,7 @@ export async function sendPath(link: Link, file: string, report = say, signal?: 
   // The same for this file until it changes, so a device that kept part of it continues when it is sent again.
   const resumeKey = createHash("sha256").update(`paironce-send-v1\0${path.resolve(file)}\0${info.size}\0${info.mtimeMs}`).digest("base64url").slice(0, 32);
   try {
-    await link.session.sendFile(new File([blob], name, { lastModified: info.mtimeMs }), undefined, signal, { resumeKey });
+    await link.session.sendFile(new File([blob], name, { lastModified: info.mtimeMs, type: typeOf(name) }), undefined, signal, { resumeKey });
   } catch (error) {
     // Every byte went, but no receipt came back in time: the file may still arrive (a slow disk on the other side), so say
     // that instead of a plain failure, and let the agent ask before it sends the file again.

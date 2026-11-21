@@ -85,6 +85,28 @@ describe("what send_file says", () => {
   });
 });
 
+describe("the file's type (CLI 0.12.1)", () => {
+  beforeEach(async () => {
+    const { saveDevice } = await import("./store");
+    await saveDevice(PHONE_A);
+  });
+
+  it("goes with the file, so the phone can preview a picture and share a PDF", async () => {
+    const { callTool } = await import("./mcp");
+    const { typeOf } = await import("./send");
+    expect(typeOf("quote.pdf")).toBe("application/pdf");
+    expect(typeOf("IMG_0001.JPG")).toBe("image/jpeg");
+    expect(typeOf("notes.md")).toBe("text/markdown");
+    expect(typeOf("backup.bin")).toBe("");
+    expect(typeOf("no-extension")).toBe("");
+    for (const name of ["quote.pdf", "photo.JPG", "data.bin"]) writeFileSync(path.join(cwd, name), name);
+    const sendFile = vi.fn(async () => {});
+    links.current = fakeLink(PHONE_A, { sendFile });
+    await callTool("send_file", { paths: ["quote.pdf", "photo.JPG", "data.bin"] });
+    expect((sendFile.mock.calls as unknown as [File][]).map(([file]) => [file.name, file.type])).toEqual([["quote.pdf", "application/pdf"], ["photo.JPG", "image/jpeg"], ["data.bin", ""]]);
+  });
+});
+
 describe("the registry entry", () => {
   it("names both directions and stays within the registry's 100 characters", async () => {
     const { readFileSync } = await import("node:fs");

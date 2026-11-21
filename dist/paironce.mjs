@@ -4934,6 +4934,50 @@ async function refusedToAgent(file, ownHome) {
   if (userData || parts.some((part) => part.startsWith(".") || part.toLowerCase() === "appdata")) return `Not sending "${shown}": hidden files and folders are not sent by an agent. The user can send it with: paironce send`;
   return void 0;
 }
+var TYPES = {
+  pdf: "application/pdf",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  avif: "image/avif",
+  heic: "image/heic",
+  heif: "image/heif",
+  bmp: "image/bmp",
+  tif: "image/tiff",
+  tiff: "image/tiff",
+  svg: "image/svg+xml",
+  mp4: "video/mp4",
+  m4v: "video/mp4",
+  mov: "video/quicktime",
+  webm: "video/webm",
+  mp3: "audio/mpeg",
+  m4a: "audio/x-m4a",
+  wav: "audio/wav",
+  ogg: "audio/ogg",
+  opus: "audio/ogg",
+  flac: "audio/flac",
+  txt: "text/plain",
+  text: "text/plain",
+  md: "text/markdown",
+  csv: "text/csv",
+  html: "text/html",
+  htm: "text/html",
+  css: "text/css",
+  json: "application/json",
+  xml: "application/xml",
+  zip: "application/zip",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  rtf: "application/rtf",
+  epub: "application/epub+zip"
+};
+var typeOf = (name) => TYPES[path4.extname(name).slice(1).toLowerCase()] ?? "";
 async function sendPath(link, file, report = say, signal) {
   const info = await stat3(file);
   if (!info.isFile()) throw new Error(`${file} is not a file. Send the files inside a folder with: paironce send ${path4.join(file, "*")}`);
@@ -4950,7 +4994,7 @@ async function sendPath(link, file, report = say, signal) {
   report(`Sending ${name} (${human(info.size)}). Waiting for ${link.peer.name} to accept\u2026`);
   const resumeKey = createHash("sha256").update(`paironce-send-v1\0${path4.resolve(file)}\0${info.size}\0${info.mtimeMs}`).digest("base64url").slice(0, 32);
   try {
-    await link.session.sendFile(new File([blob], name, { lastModified: info.mtimeMs }), void 0, signal, { resumeKey });
+    await link.session.sendFile(new File([blob], name, { lastModified: info.mtimeMs, type: typeOf(name) }), void 0, signal, { resumeKey });
   } catch (error) {
     if (/did not confirm the file in time/i.test(error instanceof Error ? error.message : String(error)))
       throw new Error(`Sent all of ${name}, but ${link.peer.name} has not confirmed it yet. It may still arrive: ask the user whether ${name} shows in PairOnce on ${link.peer.name} before sending it again.`);
@@ -4960,7 +5004,7 @@ async function sendPath(link, file, report = say, signal) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.12.0";
+var CLI_VERSION = "0.12.1";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}
