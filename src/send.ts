@@ -33,17 +33,16 @@ export async function refusedToAgent(file: string, ownHome: string): Promise<str
   return undefined;
 }
 
-/** Send one file and wait until the other device has it. The other side accepts it first. */
+/**
+ * Send one file and wait until the other device has it. The other side accepts it first. `sendFile` itself returns only
+ * when that device confirms this very transfer with its encrypted receipt, and throws when it does not within 30 s of the
+ * last byte; no second wait for a receipt is needed here (CLI 0.11.6, after the 11-20 agent review).
+ */
 export async function sendPath(link: Link, file: string, report = say): Promise<void> {
   const info = await stat(file);
   if (!info.isFile()) throw new Error(`${file} is not a file. Send the files inside a folder with: paironce send ${path.join(file, "*")}`);
   const name = path.basename(file);
   const blob = await openAsBlob(file);
-  // Listen for this file's receipt, then put the listener back as it was, so a batch does not stack them (CLI 0.11.5, B16).
-  let markReceived = () => {};
-  const received = new Promise<void>(resolve => { markReceived = resolve; });
-  const before = link.events.receipt;
-  link.events.receipt = receipt => { before?.(receipt); if (receipt.stage === "received") markReceived(); };
   let shown = -1;
   link.events.progress = (label, fraction, direction) => {
     const percent = Math.floor(fraction * 100);
@@ -52,11 +51,15 @@ export async function sendPath(link: Link, file: string, report = say): Promise<
   report(`Sending ${name} (${human(info.size)}). Waiting for ${link.peer.name} to accept…`);
   // The same for this file until it changes, so a device that kept part of it continues when it is sent again.
   const resumeKey = createHash("sha256").update(`paironce-send-v1\0${path.resolve(file)}\0${info.size}\0${info.mtimeMs}`).digest("base64url").slice(0, 32);
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await link.session.sendFile(new File([blob], name, { lastModified: info.mtimeMs }), undefined, undefined, { resumeKey });
-    await Promise.race([received, new Promise(resolve => { timer = setTimeout(resolve, 30_000); })]);
-  } finally { clearTimeout(timer); link.events.receipt = before; }
-  report(`Sent ${name}.`);
+  } catch (error) {
+    // Every byte went, but no receipt came back in time: the file may still arrive (a slow disk on the other side), so say
+    // that instead of a plain failure, and let the agent ask before it sends the file again.
+    if (/did not confirm the file in time/i.test(error instanceof Error ? error.message : String(error)))
+      throw new Error(`Sent all of ${name}, but ${link.peer.name} has not confirmed it yet. It may still arrive: ask the user whether ${name} shows in PairOnce on ${link.peer.name} before sending it again.`);
+    throw error;
+  }
+  report(`Sent ${name}; ${link.peer.name} confirmed it arrived.`);
 }
 

@@ -4171,6 +4171,10 @@ var PeerSession = class {
       channel.addEventListener("close", onClose, { once: true });
     });
   }
+  /** This connection goes through the PairOnce tunnel (a WebSocket through paironce.com), not WebRTC (2.34.1, I02). */
+  viaTunnel() {
+    return this.#channel instanceof TunnelChannel;
+  }
   async #detectPath() {
     const unknown = this.#forceRelay ? "turn" : "direct";
     if (this.#channel instanceof TunnelChannel) return "turn";
@@ -4935,16 +4939,6 @@ async function sendPath(link, file, report = say) {
   if (!info.isFile()) throw new Error(`${file} is not a file. Send the files inside a folder with: paironce send ${path4.join(file, "*")}`);
   const name = path4.basename(file);
   const blob = await openAsBlob2(file);
-  let markReceived = () => {
-  };
-  const received = new Promise((resolve) => {
-    markReceived = resolve;
-  });
-  const before = link.events.receipt;
-  link.events.receipt = (receipt) => {
-    before?.(receipt);
-    if (receipt.stage === "received") markReceived();
-  };
   let shown = -1;
   link.events.progress = (label, fraction, direction) => {
     const percent = Math.floor(fraction * 100);
@@ -4955,21 +4949,18 @@ async function sendPath(link, file, report = say) {
   };
   report(`Sending ${name} (${human(info.size)}). Waiting for ${link.peer.name} to accept\u2026`);
   const resumeKey = createHash("sha256").update(`paironce-send-v1\0${path4.resolve(file)}\0${info.size}\0${info.mtimeMs}`).digest("base64url").slice(0, 32);
-  let timer;
   try {
     await link.session.sendFile(new File([blob], name, { lastModified: info.mtimeMs }), void 0, void 0, { resumeKey });
-    await Promise.race([received, new Promise((resolve) => {
-      timer = setTimeout(resolve, 3e4);
-    })]);
-  } finally {
-    clearTimeout(timer);
-    link.events.receipt = before;
+  } catch (error) {
+    if (/did not confirm the file in time/i.test(error instanceof Error ? error.message : String(error)))
+      throw new Error(`Sent all of ${name}, but ${link.peer.name} has not confirmed it yet. It may still arrive: ask the user whether ${name} shows in PairOnce on ${link.peer.name} before sending it again.`);
+    throw error;
   }
-  report(`Sent ${name}.`);
+  report(`Sent ${name}; ${link.peer.name} confirmed it arrived.`);
 }
 
 // src/version.ts
-var CLI_VERSION = "0.11.5";
+var CLI_VERSION = "0.11.6";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}
@@ -4979,7 +4970,7 @@ var notify = (text) => {
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { level: "notice", logger: "paironce", data: text } })}
 `);
 };
-var target = { type: "string", description: "Name of a paired device (from list_devices). Optional when only one is paired." };
+var target = { type: "string", description: "Name or id of a paired device (from list_devices); use the id when two devices share a name. Optional when only one is paired." };
 var RECEIVE_WAIT = { default: 120, max: 600, quietAfterFile: 15 };
 var KEEP_OPEN_MS = 30 * 6e4;
 var HELD_MAX = 20;
@@ -5152,10 +5143,10 @@ var TOOLS = [
       wait_seconds: { type: "number", description: `Second call: how long to wait for the user to type the code, ${RECEIVE_WAIT.default} by default, at most ${RECEIVE_WAIT.max}.` }
     } }
   },
-  { name: "list_devices", description: "List the devices this agent is paired with through PairOnce.", inputSchema: { type: "object", properties: {} } },
+  { name: "list_devices", description: "List the devices this agent is paired with through PairOnce: each name with its id. Pass the id as device when two devices share a name.", inputSchema: { type: "object", properties: {} } },
   {
     name: "send_file",
-    description: "Send files from this computer to one of the user's paired devices through PairOnce, end-to-end encrypted. The user accepts each file on that device, and PairOnce must be open there. Hidden files and folders (such as .env or .ssh) are not sent.",
+    description: "Send files from this computer to one of the user's paired devices through PairOnce, end-to-end encrypted. The user accepts each file on that device, and PairOnce must be open there. Hidden files and folders (such as .env or .ssh) are not sent. Returns when that device has confirmed each file arrived.",
     inputSchema: { type: "object", properties: { paths: { type: "array", items: { type: "string" }, description: "Files to send (absolute paths, or relative to the server's folder)." }, device: target }, required: ["paths"] }
   },
   {
@@ -5302,7 +5293,7 @@ async function takeWatchStill(current) {
   return { file, data: bytes.toString("base64") };
 }
 async function watchFrames(args, device) {
-  if (watch && device && watch.link.peer.name !== device) endWatch("Watching another device.");
+  if (watch && device && watch.link.peer.name !== device && watch.link.peer.id !== device) endWatch("Watching another device.");
   let started = false;
   if (!watch) {
     const refused = await startWatch(args, device);
@@ -5414,14 +5405,18 @@ ${failures.join("\n")}`);
   return parts.join("\n\n");
 }
 async function openSaved(device, seconds, receiving2 = false) {
-  if (watch && !receiving2 && (!device || device === watch.link.peer.name)) return { ...watch.link, close: () => {
+  if (watch && !receiving2 && (!device || device === watch.link.peer.name || device === watch.link.peer.id)) return { ...watch.link, close: () => {
   } };
   if (watch) void endWatch(`Stopped watching ${watch.link.peer.name} for this.`);
   const identity = await loadOrCreateIdentity();
   const devices = await listDevices();
   const picked = pickDevice(devices, device);
   if (picked === "none") throw new Error(devices.length ? `No paired device is called "${device}".` : 'No device is paired yet. Call pair_device: it shows a six-digit code; tell the user to open paironce.com on their phone, choose "Enter a code" and type it.');
-  if (picked === "ambiguous") throw new Error(`Name the device: ${devices.map((item) => item.name).join(", ")}.`);
+  if (picked === "ambiguous") {
+    const wanted = device?.toLowerCase();
+    const candidates = wanted ? devices.filter((item) => item.name.toLowerCase().includes(wanted)) : devices;
+    throw new Error(`Which device? Pass its id as device: ${(candidates.length ? candidates : devices).map((item) => `"${item.name}" (id ${item.id})`).join(", ")}.`);
+  }
   if (kept && kept.link.isOpen() && kept.link.peer.id === picked.id) return inUse(kept);
   closeKeptLink();
   notify(`Connecting to ${picked.name}. On that device, open https://paironce.com: it shows "${identity.name} wants to reconnect"; tap Connect.`);
@@ -5496,7 +5491,7 @@ ${failures.join("\n")}`);
 async function callTool(name, args) {
   if (name === "list_devices") {
     const devices = await listDevices();
-    return devices.length ? devices.map((device2) => `${device2.name} (last seen ${new Date(device2.lastSeenAt).toISOString()})`).join("\n") : 'No paired devices. Call pair_device: it shows a six-digit code; tell the user to open paironce.com on their phone, choose "Enter a code" and type it.';
+    return devices.length ? devices.map((device2) => `${device2.name} (id ${device2.id}, last seen ${new Date(device2.lastSeenAt).toISOString()})`).join("\n") : 'No paired devices. Call pair_device: it shows a six-digit code; tell the user to open paironce.com on their phone, choose "Enter a code" and type it.';
   }
   if (name === "pair_device") return pairDevice(args);
   const device = typeof args.device === "string" && args.device ? args.device : void 0;
@@ -5530,7 +5525,7 @@ async function callTool(name, args) {
     const link = await openSaved(device, 120);
     try {
       for (const file of paths) await sendPath(link, path5.resolve(file), log);
-      return `Sent ${paths.length === 1 ? path5.basename(paths[0]) : `${paths.length} files`} to ${link.peer.name}.`;
+      return `Delivered ${paths.length === 1 ? path5.basename(paths[0]) : `${paths.length} files`} to ${link.peer.name}: it confirmed receipt. The user saves or opens it from PairOnce there.`;
     } finally {
       link.close();
     }

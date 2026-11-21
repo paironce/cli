@@ -35,7 +35,7 @@ const notify = (text: string) => {
   log(text);
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { level: "notice", logger: "paironce", data: text } })}\n`);
 };
-const target = { type: "string", description: "Name of a paired device (from list_devices). Optional when only one is paired." };
+const target = { type: "string", description: "Name or id of a paired device (from list_devices); use the id when two devices share a name. Optional when only one is paired." };
 /** How long receive_files waits by default and at most, and how long it waits after the last file before it returns. */
 export const RECEIVE_WAIT = { default: 120, max: 600, quietAfterFile: 15 } as const;
 /** Watching: stills per call, the gap between them (seconds), how long one still may take, and the idle close (ms). */
@@ -170,8 +170,8 @@ export const TOOLS = [
     inputSchema: { type: "object", properties: {
       confirm: { type: "boolean", description: "Third call: whether the user said their device shows the same safety code." },
       wait_seconds: { type: "number", description: `Second call: how long to wait for the user to type the code, ${RECEIVE_WAIT.default} by default, at most ${RECEIVE_WAIT.max}.` } } } },
-  { name: "list_devices", description: "List the devices this agent is paired with through PairOnce.", inputSchema: { type: "object", properties: {} } },
-  { name: "send_file", description: "Send files from this computer to one of the user's paired devices through PairOnce, end-to-end encrypted. The user accepts each file on that device, and PairOnce must be open there. Hidden files and folders (such as .env or .ssh) are not sent.",
+  { name: "list_devices", description: "List the devices this agent is paired with through PairOnce: each name with its id. Pass the id as device when two devices share a name.", inputSchema: { type: "object", properties: {} } },
+  { name: "send_file", description: "Send files from this computer to one of the user's paired devices through PairOnce, end-to-end encrypted. The user accepts each file on that device, and PairOnce must be open there. Hidden files and folders (such as .env or .ssh) are not sent. Returns when that device has confirmed each file arrived.",
     inputSchema: { type: "object", properties: { paths: { type: "array", items: { type: "string" }, description: "Files to send (absolute paths, or relative to the server's folder)." }, device: target }, required: ["paths"] } },
   { name: "send_text", description: "Send a message or a link to one of the user's paired devices through PairOnce, end-to-end encrypted. PairOnce must be open there.",
     inputSchema: { type: "object", properties: { text: { type: "string" }, device: target }, required: ["text"] } },
@@ -274,7 +274,7 @@ async function takeWatchStill(current: NonNullable<typeof watch>): Promise<{ fil
 }
 
 async function watchFrames(args: Record<string, unknown>, device: string | undefined): Promise<string | Content[]> {
-  if (watch && device && watch.link.peer.name !== device) endWatch("Watching another device.");
+  if (watch && device && watch.link.peer.name !== device && watch.link.peer.id !== device) endWatch("Watching another device.");
   let started = false;
   if (!watch) {
     const refused = await startWatch(args, device);
@@ -358,13 +358,17 @@ async function requestFrom(kind: "photo" | "scan" | "file", args: Record<string,
 
 async function openSaved(device: string | undefined, seconds: number, receiving = false): Promise<Link> {
   // A message or a file to the device being watched goes over the watch's own connection, which stays in the watch's use.
-  if (watch && !receiving && (!device || device === watch.link.peer.name)) return { ...watch.link, close: () => {} };
+  if (watch && !receiving && (!device || device === watch.link.peer.name || device === watch.link.peer.id)) return { ...watch.link, close: () => {} };
   if (watch) void endWatch(`Stopped watching ${watch.link.peer.name} for this.`);
   const identity = await loadOrCreateIdentity();
   const devices = await listDevices();
   const picked = pickDevice(devices, device);
   if (picked === "none") throw new Error(devices.length ? `No paired device is called "${device}".` : "No device is paired yet. Call pair_device: it shows a six-digit code; tell the user to open paironce.com on their phone, choose \"Enter a code\" and type it.");
-  if (picked === "ambiguous") throw new Error(`Name the device: ${devices.map(item => item.name).join(", ")}.`);
+  if (picked === "ambiguous") {
+    const wanted = device?.toLowerCase();
+    const candidates = wanted ? devices.filter(item => item.name.toLowerCase().includes(wanted)) : devices;
+    throw new Error(`Which device? Pass its id as device: ${(candidates.length ? candidates : devices).map(item => `"${item.name}" (id ${item.id})`).join(", ")}.`);
+  }
   if (kept && kept.link.isOpen() && kept.link.peer.id === picked.id) return inUse(kept);
   closeKeptLink();
   notify(`Connecting to ${picked.name}. On that device, open https://paironce.com: it shows "${identity.name} wants to reconnect"; tap Connect.`);
@@ -414,7 +418,8 @@ async function receiveFiles(args: Record<string, unknown>, device: string | unde
 export async function callTool(name: string, args: Record<string, unknown>): Promise<string | Content[]> {
   if (name === "list_devices") {
     const devices = await listDevices();
-    return devices.length ? devices.map(device => `${device.name} (last seen ${new Date(device.lastSeenAt).toISOString()})`).join("\n") : "No paired devices. Call pair_device: it shows a six-digit code; tell the user to open paironce.com on their phone, choose \"Enter a code\" and type it.";
+    // The id goes with every name: two phones can share a name, and the id picks one (CLI 0.11.6).
+    return devices.length ? devices.map(device => `${device.name} (id ${device.id}, last seen ${new Date(device.lastSeenAt).toISOString()})`).join("\n") : "No paired devices. Call pair_device: it shows a six-digit code; tell the user to open paironce.com on their phone, choose \"Enter a code\" and type it.";
   }
   if (name === "pair_device") return pairDevice(args);
   const device = typeof args.device === "string" && args.device ? args.device : undefined;
@@ -442,7 +447,7 @@ export async function callTool(name: string, args: Record<string, unknown>): Pro
     const link = await openSaved(device, 120);
     try {
       for (const file of paths) await sendPath(link, path.resolve(file), log);
-      return `Sent ${paths.length === 1 ? path.basename(paths[0]!) : `${paths.length} files`} to ${link.peer.name}.`;
+      return `Delivered ${paths.length === 1 ? path.basename(paths[0]!) : `${paths.length} files`} to ${link.peer.name}: it confirmed receipt. The user saves or opens it from PairOnce there.`;
     } finally { link.close(); }
   }
   throw new Error(`Unknown tool ${name}.`);

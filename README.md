@@ -42,11 +42,11 @@ When a paired device is not connected, the command asks it to connect: PairOnce 
 | Tool | What it does |
 | --- | --- |
 | `pair_device` | Pairs one of your devices. The agent gives you a six-digit code; you open paironce.com on that device, choose **Enter a code** and type it. The agent then tells you a safety code, and goes on only after you say your device shows the same. Once per device. |
-| `send_file`, `send_text` | Sends to a paired device; you accept every file there. |
+| `send_file`, `send_text` | Sends to a paired device; you accept every file there. `send_file` returns once the device confirms each file arrived. |
 | `receive_files` | Waits while you send files from your device (a photo of a whiteboard, a scan, a document) and saves them into `./inbox`. |
 | `request_photo`, `request_scan`, `request_file` | Asks for something specific, with the reason. Your device shows the request; you take the photo, scan the pages or choose the file there, or decline. Saved into `./inbox`. |
 | `watch_frames`, `watch_stop` | Asks to see your camera or screen, with the reason. You share it on your device, or decline; the agent then gets a still picture each time it asks (at most two a second) and can guide you step by step. Your device shows the share and a stop button; it ends when either side stops it. |
-| `list_devices` | Lists the paired devices. |
+| `list_devices` | Lists the paired devices, each with its id; pass the id as `device` when two share a name. |
 
 The agent reaches only devices you paired and approved, and nothing arrives anywhere unasked. Your device marks it
 **Agent** when it asks to be approved and in your saved devices. Design and plans:
