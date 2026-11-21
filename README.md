@@ -37,7 +37,7 @@ When a paired device is not connected, the command asks it to connect: PairOnce 
 
 ## Use it from an AI agent (MCP)
 
-`paironce mcp` gives an agent ten tools:
+`paironce mcp` gives an agent twelve tools:
 
 | Tool | What it does |
 | --- | --- |
@@ -47,6 +47,11 @@ When a paired device is not connected, the command asks it to connect: PairOnce 
 | `request_photo`, `request_scan`, `request_file` | Asks for something specific, with the reason. Your device shows the request; you take the photo, scan the pages or choose the file there, or decline. Saved into `./inbox`. |
 | `watch_frames`, `watch_stop` | Asks to see your camera or screen, with the reason. You share it on your device, or decline; the agent then gets a still picture each time it asks (at most two a second) and can guide you step by step. Your device shows the share and a stop button; it ends when either side stops it. |
 | `list_devices` | Lists the paired devices, each with its id; pass the id as `device` when two share a name. |
+| `status`, `cancel` | Answer at once, even while another call waits: what is waiting now (for example your answer to a photo request) and for how long, and stop it. A request on your device is withdrawn, and the next call can start. |
+
+Every tool also returns its result as fields (`structuredContent`), such as `status` (`declined`, `no_answer`, `arriving`,
+`saved`, `delivered`…), `files`, `retry` and `next`. When the agent's app cancels a call (for example when you press Esc),
+the request on your device is withdrawn and the next call starts.
 
 The agent reaches only devices you paired and approved, and nothing arrives anywhere unasked. Your device marks it
 **Agent** when it asks to be approved and in your saved devices. Design and plans:

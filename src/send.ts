@@ -38,7 +38,7 @@ export async function refusedToAgent(file: string, ownHome: string): Promise<str
  * when that device confirms this very transfer with its encrypted receipt, and throws when it does not within 30 s of the
  * last byte; no second wait for a receipt is needed here (CLI 0.11.6, after the 11-20 agent review).
  */
-export async function sendPath(link: Link, file: string, report = say): Promise<void> {
+export async function sendPath(link: Link, file: string, report = say, signal?: AbortSignal): Promise<void> {
   const info = await stat(file);
   if (!info.isFile()) throw new Error(`${file} is not a file. Send the files inside a folder with: paironce send ${path.join(file, "*")}`);
   const name = path.basename(file);
@@ -52,7 +52,7 @@ export async function sendPath(link: Link, file: string, report = say): Promise<
   // The same for this file until it changes, so a device that kept part of it continues when it is sent again.
   const resumeKey = createHash("sha256").update(`paironce-send-v1\0${path.resolve(file)}\0${info.size}\0${info.mtimeMs}`).digest("base64url").slice(0, 32);
   try {
-    await link.session.sendFile(new File([blob], name, { lastModified: info.mtimeMs }), undefined, undefined, { resumeKey });
+    await link.session.sendFile(new File([blob], name, { lastModified: info.mtimeMs }), undefined, signal, { resumeKey });
   } catch (error) {
     // Every byte went, but no receipt came back in time: the file may still arrive (a slow disk on the other side), so say
     // that instead of a plain failure, and let the agent ask before it sends the file again.
