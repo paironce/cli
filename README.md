@@ -1,8 +1,10 @@
 # paironce
 
-Send files and text from a terminal to your own phone or computer with [PairOnce](https://paironce.com). Pair once with
-a six-digit code; after that, `npx paironce send report.pdf` puts the file on your phone. End-to-end encrypted, direct
-between the devices whenever the network allows, and through an encrypted relay when it does not. No account.
+Your AI agent can send files to your phone with [PairOnce](https://paironce.com), and ask the phone for a photo, a scan or
+a file. You approve every one there, and the phone marks the agent as **Agent**. The same package works from a terminal:
+pair once with a six-digit code, and after that `npx paironce send report.pdf` puts the file on your phone. End-to-end
+encrypted, direct between the devices whenever the network allows, and through an encrypted relay when it does not. No
+account.
 
 ```sh
 npx paironce pair                 # shows a code: type it at paironce.com on your phone

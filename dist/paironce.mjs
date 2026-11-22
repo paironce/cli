@@ -5004,7 +5004,7 @@ async function sendPath(link, file, report = say, signal) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.12.1";
+var CLI_VERSION = "0.12.2";
 
 // src/mcp.ts
 var log = (text) => process.stderr.write(`${text}
